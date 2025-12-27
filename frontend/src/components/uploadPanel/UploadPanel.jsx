@@ -719,26 +719,25 @@ export default function UploadPanel() {
                         ref={(el) => (audioInputRef.current[entry.id] = el)}
                         type="file"
                         accept="audio/*"
-                        capture="microphone"
                         hidden
                         onChange={async (e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
 
-                          const blob = file;
-                          const previewUrl = URL.createObjectURL(blob);
+                          const previewUrl = URL.createObjectURL(file);
 
                           updateEntry(entry.id, {
-                            audioBlob: blob,
+                            audioBlob: file,
                             audioPreviewUrl: previewUrl,
                             error: null,
                           });
 
-                          await transcribeBlob(entry.id, blob);
+                          await transcribeBlob(entry.id, file);
 
                           e.target.value = "";
                         }}
                       />
+
                     </>
                   ) : (
                     <button
