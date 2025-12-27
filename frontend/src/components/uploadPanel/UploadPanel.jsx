@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
+import jsPDF from "jspdf";
 import "./UploadPanel.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -10,23 +11,29 @@ function createEntry() {
     id: crypto.randomUUID(),
     audioBlob: null,
     audioPreviewUrl: null,
-    audioRemoteUrl: null,
 
     photoFiles: [],
-    photoRemoteUrls: [],
+    photoPreviewUrls: [],
 
     transcript: null,
-    text: "", // ✅ testo finale editabile
+    text: "",
 
-    uploading: false,
+    recording: false,
     transcribing: false,
     error: null,
   };
 }
 
-
-// localStorage key
 const LS_KEY = "sytcore_entries_v1";
+
+// convert file -> dataURL (base64)
+const fileToDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
 
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
@@ -36,7 +43,6 @@ export default function UploadPanel() {
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
-  const activeEntryIdRef = useRef(null);
 
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
@@ -48,13 +54,13 @@ export default function UploadPanel() {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (!raw) return;
+
       const saved = JSON.parse(raw);
 
       const restored = saved.map((e) => ({
         ...createEntry(),
         id: e.id || crypto.randomUUID(),
-        audioRemoteUrl: e.audioRemoteUrl || null,
-        photoRemoteUrls: e.photoRemoteUrls || [],
+        text: e.text || "",
         transcript: e.transcript || null,
       }));
 
@@ -69,8 +75,6 @@ export default function UploadPanel() {
     try {
       const minimal = entries.map((e) => ({
         id: e.id,
-        audioRemoteUrl: e.audioRemoteUrl,
-        photoRemoteUrls: e.photoRemoteUrls,
         transcript: e.transcript,
         text: e.text,
       }));
@@ -87,7 +91,7 @@ export default function UploadPanel() {
     );
   };
 
-  // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB (NO UPLOAD NEEDED)
+  // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB
   const transcribeBlob = async (entryId, audioBlob) => {
     updateEntry(entryId, {
       transcribing: true,
@@ -97,8 +101,6 @@ export default function UploadPanel() {
 
     try {
       const formData = new FormData();
-
-      // ✅ Convert blob -> File (important for OpenAI)
       const file = new File([audioBlob], "voice-note.webm", {
         type: audioBlob.type || "audio/webm",
       });
@@ -114,7 +116,6 @@ export default function UploadPanel() {
         text: tRes.data.transcript,
         transcribing: false,
       });
-
     } catch (err) {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
 
@@ -125,13 +126,11 @@ export default function UploadPanel() {
     }
   };
 
-
   // ---------- Recording ----------
   const startRecording = async (entryId) => {
     setGlobalError(null);
     updateEntry(entryId, { error: null });
 
-    // block if already recording another entry
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state === "recording"
@@ -145,7 +144,6 @@ export default function UploadPanel() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      activeEntryIdRef.current = entryId;
 
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
@@ -170,12 +168,9 @@ export default function UploadPanel() {
           error: null,
         });
 
-        // stop mic
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
-        activeEntryIdRef.current = null;
 
-        // ✅ AUTO TRANSCRIBE RIGHT HERE
         await transcribeBlob(entryId, blob);
       };
 
@@ -200,7 +195,9 @@ export default function UploadPanel() {
     setEntries((prev) =>
       prev.map((e) => {
         if (e.id !== entryId) return e;
+
         if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
+        e.photoPreviewUrls?.forEach((u) => URL.revokeObjectURL(u));
 
         return {
           ...createEntry(),
@@ -215,80 +212,167 @@ export default function UploadPanel() {
     }
 
     mediaRecorderRef.current = null;
-    activeEntryIdRef.current = null;
   };
 
-  // ---------- Upload Entry (ONLY for saving media remote) ----------
-  const uploadEntry = async (entry) => {
-    if (!entry.audioBlob && entry.photoFiles.length === 0) {
-      updateEntry(entry.id, {
-        error: "Please add a voice note OR at least one photo.",
-      });
-      return;
-    }
-
-    updateEntry(entry.id, {
-      uploading: true,
-      error: null,
-    });
-
-    try {
-      const formData = new FormData();
-
-      if (entry.audioBlob) {
-        const audioFile = new File([entry.audioBlob], `voice-note.webm`, {
-          type: entry.audioBlob.type || "audio/webm",
-        });
-        formData.append("audio", audioFile);
-      }
-
-      entry.photoFiles.forEach((p) => formData.append("photos", p));
-
-      const uploadRes = await axios.post(`${API_URL}/api/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      const { audioUrl, photoUrls } = uploadRes.data;
-
-      updateEntry(entry.id, {
-        audioRemoteUrl: audioUrl,
-        photoRemoteUrls: photoUrls || [],
-      });
-    } catch (err) {
-      console.error("UPLOAD ERROR:", err?.response?.data || err.message);
-      updateEntry(entry.id, {
-        error: err?.response?.data?.error || "Upload failed.",
-      });
-    } finally {
-      updateEntry(entry.id, { uploading: false });
-    }
-  };
-
-  // ---------- Add Entry ----------
   const addEntry = () => {
     setEntries((prev) => [...prev, createEntry()]);
   };
 
-  // ---------- Clear all ----------
   const clearReport = () => {
     if (!confirm("Clear all entries?")) return;
 
     entries.forEach((e) => {
       if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
+      e.photoPreviewUrls?.forEach((u) => URL.revokeObjectURL(u));
     });
 
     localStorage.removeItem(LS_KEY);
     setEntries([createEntry()]);
   };
 
+  // ---------- PDF GENERATOR ----------
+  const generatePDF = async () => {
+    setGlobalError(null);
+
+    try {
+      const doc = new jsPDF("p", "mm", "a4");
+
+      const pageW = 210;
+      const pageH = 297;
+      const margin = 12;
+      const contentW = pageW - margin * 2;
+
+      let y = margin;
+
+      // Header
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(18);
+      doc.text("SYTCORE Daily Report", margin, y);
+      y += 10;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
+      y += 12;
+
+      // Helper for page break
+      const ensureSpace = (neededHeight) => {
+        if (y + neededHeight > pageH - margin) {
+          doc.addPage();
+          y = margin;
+        }
+      };
+
+      // Helper: render photo gallery (full width)
+      const drawPhotoGallery = async (photos) => {
+        if (!photos || photos.length === 0) {
+          doc.setTextColor(130);
+          doc.text("No photos", margin, y + 6);
+          doc.setTextColor(0);
+          y += 10;
+          return;
+        }
+
+        const gap = 3;
+        let cols = photos.length === 1 ? 1 : 2;
+
+        const cellW =
+          cols === 1 ? contentW : (contentW - gap) / 2;
+
+        const cellH = cellW * 0.7; // aspect ratio nice
+
+        let col = 0;
+
+        for (let i = 0; i < photos.length; i++) {
+          ensureSpace(cellH + 6);
+
+          const x = margin + col * (cellW + gap);
+
+          const dataUrl = await fileToDataUrl(photos[i]);
+          doc.addImage(dataUrl, "JPEG", x, y, cellW, cellH);
+
+          col++;
+
+          // next row
+          if (col >= cols) {
+            col = 0;
+            y += cellH + gap;
+          }
+        }
+
+        // if last row had only 1 image in 2-col layout
+        if (col !== 0) {
+          y += cellH + gap;
+        }
+
+        y += 4;
+      };
+
+      // Loop entries
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+
+        const text = (entry.text || "").trim() || "(empty)";
+        const lines = doc.splitTextToSize(text, contentW - 6);
+        const textH = lines.length * 5;
+
+        // Entry title
+        ensureSpace(12);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(12);
+        doc.text(`Entry #${i + 1}`, margin, y);
+        y += 7;
+
+        // Text box
+        ensureSpace(textH + 14);
+        doc.setDrawColor(40);
+        doc.setFillColor(245, 245, 245);
+        doc.roundedRect(margin, y, contentW, textH + 10, 3, 3, "FD");
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        doc.text(lines, margin + 3, y + 7);
+
+        y += textH + 14;
+
+        // Photos label
+        ensureSpace(10);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.text("Photos", margin, y);
+        y += 6;
+
+        // Photos gallery
+        await drawPhotoGallery(entry.photoFiles);
+
+        // Divider
+        ensureSpace(8);
+        doc.setDrawColor(70);
+        doc.line(margin, y, margin + contentW, y);
+        y += 8;
+      }
+
+      doc.save(`sytcore-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error(err);
+      setGlobalError("PDF generation failed. Check console.");
+    }
+  };
+
+
   return (
     <div className="wrapper">
       <div className="topBar">
         <h2 className="title">SYTCORE Daily Report</h2>
 
-        <button className="btnDanger" onClick={clearReport}>
-          Clear Report
-        </button>
+        <div className="topActions">
+          <button className="btnPrimaryGhost" onClick={generatePDF}>
+            Generate PDF
+          </button>
+          <button className="btnDanger" onClick={clearReport}>
+            Clear Report
+          </button>
+        </div>
       </div>
 
       {!hasMediaRecorder && (
@@ -311,7 +395,7 @@ export default function UploadPanel() {
                   <button
                     className="btn"
                     onClick={() => startRecording(entry.id)}
-                    disabled={!hasMediaRecorder || entry.uploading}
+                    disabled={!hasMediaRecorder || entry.transcribing}
                   >
                     🎙 Record
                   </button>
@@ -324,7 +408,7 @@ export default function UploadPanel() {
                 <button
                   className="btnGhost"
                   onClick={() => resetEntry(entry.id)}
-                  disabled={entry.uploading || entry.transcribing}
+                  disabled={entry.transcribing}
                 >
                   🗑 Reset
                 </button>
@@ -334,39 +418,20 @@ export default function UploadPanel() {
                 <audio className="audio" controls src={entry.audioPreviewUrl} />
               )}
 
-              {/* DESCRIPTION (editable) */}
-              <div style={{ marginTop: 18 }}>
-                <p style={{ fontWeight: 700, marginBottom: 8, letterSpacing: 1, opacity: 0.85 }}>
-                  DESCRIPTION
-                </p>
+              <div className="descBlock">
+                <p className="sectionTitle">Description</p>
 
-                {entry.transcribing && (
-                  <p style={{ fontSize: 13, opacity: 0.75, marginBottom: 8 }}>
-                    Transcribing...
-                  </p>
-                )}
+                {entry.transcribing && <p className="mutedSmall">Transcribing...</p>}
 
                 <textarea
+                  className="textarea"
                   value={entry.text || ""}
                   onChange={(e) => updateEntry(entry.id, { text: e.target.value })}
                   placeholder="Your description will appear here after transcription… but you can edit it."
-                  style={{
-                    width: "100%",
-                    minHeight: 110,
-                    resize: "vertical",
-                    borderRadius: 12,
-                    padding: 14,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(255,255,255,0.04)",
-                    color: "#fff",
-                    fontSize: 13.5,
-                    lineHeight: 1.5,
-                    outline: "none",
-                    boxSizing: "border-box",
-                  }}
                 />
-              </div>
 
+                {entry.error && <p className="error">{entry.error}</p>}
+              </div>
             </div>
 
             {/* RIGHT */}
@@ -378,10 +443,18 @@ export default function UploadPanel() {
                 type="file"
                 accept="image/*"
                 multiple
-                disabled={entry.uploading}
+                disabled={entry.transcribing}
                 onChange={(e) => {
                   const files = Array.from(e.target.files || []);
-                  updateEntry(entry.id, { photoFiles: files });
+                  const previewUrls = files.map((f) => URL.createObjectURL(f));
+
+                  // cleanup old previews
+                  entry.photoPreviewUrls?.forEach((u) => URL.revokeObjectURL(u));
+
+                  updateEntry(entry.id, {
+                    photoFiles: files,
+                    photoPreviewUrls: previewUrls,
+                  });
                 }}
               />
 
@@ -391,25 +464,13 @@ export default function UploadPanel() {
                 </p>
               )}
 
-              {entry.photoRemoteUrls?.length > 0 && (
+              {entry.photoPreviewUrls?.length > 0 && (
                 <div className="grid">
-                  {entry.photoRemoteUrls.map((url) => (
-                    <a key={url} href={url} target="_blank" rel="noreferrer">
-                      <img className="thumb" src={url} alt="uploaded" />
-                    </a>
+                  {entry.photoPreviewUrls.map((url) => (
+                    <img className="thumb" key={url} src={url} alt="preview" />
                   ))}
                 </div>
               )}
-
-              <button
-                className="btnPrimary"
-                onClick={() => uploadEntry(entry)}
-                disabled={entry.uploading || entry.transcribing}
-              >
-                {entry.uploading ? "Uploading..." : "Upload Entry"}
-              </button>
-
-              {entry.error && <p className="error">{entry.error}</p>}
             </div>
           </div>
         ))}
