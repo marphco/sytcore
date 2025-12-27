@@ -315,39 +315,19 @@ export default function UploadPanel() {
 
 
   const stopRecording = async (entryId) => {
-    try {
-      const recorder = wavRecorderRef.current;
-      if (!recorder) return;
+  try {
+    const recorder = wavRecorderRef.current;
+    if (!recorder) return;
 
-      updateEntry(entryId, { recording: false });
+    updateEntry(entryId, { recording: false });
 
-      const wavBlob = stopWavRecording(recorder);
-      wavRecorderRef.current = null;
-
-      updateEntry(entryId, {
-        audioBlob: wavBlob,
-        audioPreviewUrl: null,   // <-- lo settiamo dopo
-        error: null,
-      });
-
-      // ✅ transcribe prima
-      await transcribeBlob(entryId, wavBlob);
-
-      // ✅ preview dopo, in tick separato
-      setTimeout(() => {
-        const previewUrl = URL.createObjectURL(wavBlob);
-        updateEntry(entryId, { audioPreviewUrl: previewUrl });
-      }, 100);
-
-
-    } catch (err) {
-      console.error("stopRecording WAV error:", err);
-      updateEntry(entryId, {
-        recording: false,
-        error: "Could not stop recording. Please retry.",
-      });
-    }
-  };
+    // COMMENTA TUTTO QUI
+    wavRecorderRef.current = null;
+    alert("STOP OK (no encode)");
+  } catch (err) {
+    console.error(err);
+  }
+};
 
 
   // ---------- Photos handler ----------
