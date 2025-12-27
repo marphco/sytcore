@@ -14,19 +14,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 const API_URL = import.meta.env.VITE_API_URL;
-const LS_KEY = "sytcore_entries_v1";
 
-// 🔥 iOS Safari detection
-const isIOS = () =>
-  typeof navigator !== "undefined" &&
-  /iPad|iPhone|iPod/.test(navigator.userAgent);
-
-const isSafari = () =>
-  typeof navigator !== "undefined" &&
-  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-
-const useNativeRecorder = () => isIOS() && isSafari();
-
+// ---------- Helpers ----------
 function createEntry() {
   return {
     id: crypto.randomUUID(),
@@ -42,6 +31,9 @@ function createEntry() {
   };
 }
 
+const LS_KEY = "sytcore_entries_v1";
+
+// ---------- Sortable Photo ----------
 function SortablePhoto({ photo, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: photo.id });
@@ -71,9 +63,21 @@ function SortablePhoto({ photo, onRemove }) {
   );
 }
 
+// ---------- iOS / Safari detection ----------
+const isIOS = () =>
+  typeof navigator !== "undefined" &&
+  /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+const isSafari = () =>
+  typeof navigator !== "undefined" &&
+  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+const useNativeRecorder = () => isIOS() && isSafari();
+
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
   const [globalError, setGlobalError] = useState(null);
+
   const [projectName, setProjectName] = useState("");
   const [reportDate, setReportDate] = useState(() => {
     const d = new Date();
@@ -82,21 +86,19 @@ export default function UploadPanel() {
   });
 
   const fileInputRef = useRef({});
-  const audioInputRef = useRef({}); // ✅ native recorder input refs
+  const audioInputRef = useRef({});
 
-  // MediaRecorder refs (non iOS Safari)
+  // MediaRecorder refs (NON iOS Safari)
   const mediaRecorderRef = useRef(null);
-  const chunksRef = useRef([]);
   const streamRef = useRef(null);
+  const chunksRef = useRef([]);
 
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
-  // ----------------------------
-  // Load localStorage
-  // ----------------------------
+  // ---------- Load from localStorage ----------
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -115,12 +117,12 @@ export default function UploadPanel() {
       }));
 
       if (restored.length > 0) setEntries(restored);
-    } catch {}
+    } catch (err) {
+      console.error("localStorage load error:", err);
+    }
   }, []);
 
-  // ----------------------------
-  // Save localStorage
-  // ----------------------------
+  // ---------- Save to localStorage ----------
   useEffect(() => {
     try {
       const minimal = {
@@ -133,33 +135,39 @@ export default function UploadPanel() {
         })),
       };
       localStorage.setItem(LS_KEY, JSON.stringify(minimal));
-    } catch {}
+    } catch (err) {
+      console.error("localStorage save error:", err);
+    }
   }, [entries, projectName, reportDate]);
 
+  // ---------- Update entry ----------
   const updateEntry = (id, patch) => {
     setEntries((prev) =>
       prev.map((e) => {
         if (e.id !== id) return e;
+
         const resolvedPatch = typeof patch === "function" ? patch(e) : patch;
+        const finalPatch = { ...resolvedPatch };
 
         if (typeof resolvedPatch.text === "function") {
-          return { ...e, ...resolvedPatch, text: resolvedPatch.text(e.text || "") };
+          finalPatch.text = resolvedPatch.text(e.text || "");
         }
-        return { ...e, ...resolvedPatch };
+
+        return { ...e, ...finalPatch };
       })
     );
   };
 
-  // ----------------------------
-  // Transcribe
-  // ----------------------------
+  // ---------- Transcribe blob ----------
   const transcribeBlob = async (entryId, audioBlob) => {
-    updateEntry(entryId, { transcribing: true, error: null });
+    updateEntry(entryId, {
+      transcribing: true,
+      error: null,
+    });
 
     try {
       const formData = new FormData();
 
-      // iOS Safari file will be m4a/mp4 -> safe
       const ext = audioBlob.type.includes("mp4") ? "m4a" : "webm";
       formData.append("audio", audioBlob, `voice-note.${ext}`);
 
@@ -175,92 +183,21 @@ export default function UploadPanel() {
         transcribing: false,
       });
     } catch (err) {
+      console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
       updateEntry(entryId, {
         transcribing: false,
-        error: err?.response?.data?.error || "Transcription failed.",
+        error:
+          err.code === "ECONNABORTED"
+            ? "Transcription timed out. Try again."
+            : err?.response?.data?.error || "Transcription failed.",
       });
     }
   };
 
-  // ----------------------------
-  // MediaRecorder START (non iOS)
-  // ----------------------------
-  const startRecording = async (entryId) => {
-    updateEntry(entryId, { error: null });
-    setGlobalError(null);
-
-    // ✅ iOS Safari → use native audio capture
-    if (useNativeRecorder()) {
-      audioInputRef.current[entryId]?.click();
-      return;
-    }
-
-    if (!hasMediaRecorder) {
-      updateEntry(entryId, { error: "Recording not supported on this browser." });
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      const recorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = recorder;
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data?.size > 0) chunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
-
-        stream.getTracks().forEach((t) => t.stop());
-
-        const previewUrl = URL.createObjectURL(blob);
-
-        updateEntry(entryId, {
-          audioBlob: blob,
-          audioPreviewUrl: previewUrl,
-          recording: false,
-        });
-
-        setTimeout(() => transcribeBlob(entryId, blob), 200);
-      };
-
-      recorder.start();
-      updateEntry(entryId, { recording: true });
-    } catch {
-      updateEntry(entryId, {
-        recording: false,
-        error: "Microphone permission denied or recording failed.",
-      });
-    }
-  };
-
-  const stopRecording = (entryId) => {
-    if (useNativeRecorder()) return; // iOS uses native file
-
-    try {
-      const recorder = mediaRecorderRef.current;
-      if (!recorder || recorder.state === "inactive") return;
-      recorder.stop();
-      updateEntry(entryId, { recording: false });
-    } catch {
-      updateEntry(entryId, {
-        recording: false,
-        error: "Could not stop recording.",
-      });
-    }
-  };
-
-  // ----------------------------
-  // Photos handler
-  // ----------------------------
+  // ---------- Add photos ----------
   const addPhotosToEntry = async (entryId, files) => {
-    if (!files?.length) return;
+    if (!files || files.length === 0) return;
+
     updateEntry(entryId, { uploading: true, error: null });
 
     try {
@@ -282,19 +219,95 @@ export default function UploadPanel() {
         photos: [...prev.photos, ...newPhotos],
         uploading: false,
       }));
-    } catch {
-      updateEntry(entryId, { uploading: false, error: "Failed to process photos." });
+    } catch (err) {
+      console.error(err);
+      updateEntry(entryId, {
+        uploading: false,
+        error: "Failed to process photos.",
+      });
     }
   };
 
+  // ---------- MediaRecorder recording (NON iOS Safari) ----------
+  const getSupportedMimeType = () => {
+    const types = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
+    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  };
+
+  const startRecording = async (entryId) => {
+    setGlobalError(null);
+    updateEntry(entryId, { error: null });
+
+    // ✅ iOS Safari -> native recorder
+    if (useNativeRecorder()) {
+      audioInputRef.current.__targetEntryId = entryId;
+      audioInputRef.current["_global"]?.click();
+      return;
+    }
+
+    if (!hasMediaRecorder) {
+      updateEntry(entryId, { error: "Recording not supported on this device." });
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      const mimeType = getSupportedMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      mediaRecorderRef.current = recorder;
+      chunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+
+        const previewUrl = URL.createObjectURL(blob);
+
+        updateEntry(entryId, {
+          audioBlob: blob,
+          audioPreviewUrl: previewUrl,
+          recording: false,
+        });
+
+        stream.getTracks().forEach((t) => t.stop());
+        transcribeBlob(entryId, blob);
+      };
+
+      recorder.start();
+      updateEntry(entryId, { recording: true });
+    } catch (err) {
+      console.error("startRecording error:", err);
+      updateEntry(entryId, {
+        recording: false,
+        error: "Microphone permission denied or recording failed.",
+      });
+    }
+  };
+
+  const stopRecording = (entryId) => {
+    if (useNativeRecorder()) return; // iOS native handles itself
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    if (recorder.state === "inactive") return;
+    recorder.stop();
+    updateEntry(entryId, { recording: false });
+  };
+
+  // ---------- Reset Entry ----------
   const resetEntry = (entryId) => {
     setEntries((prev) =>
       prev.map((e) => {
         if (e.id !== entryId) return e;
-
         if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
-        e.photos.forEach((p) => URL.revokeObjectURL(p.url));
-
+        e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
         return { ...createEntry(), id: e.id };
       })
     );
@@ -304,27 +317,87 @@ export default function UploadPanel() {
 
   const clearReport = () => {
     if (!confirm("Clear all entries?")) return;
+    entries.forEach((e) => {
+      if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
+      e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
+    });
     localStorage.removeItem(LS_KEY);
     setEntries([createEntry()]);
   };
 
-  // ----------------------------
-  // PDF (unchanged)
-  // ----------------------------
+  // ---------- PDF ----------
   const generatePDF = async () => {
     setGlobalError(null);
 
     try {
       const doc = new jsPDF("p", "mm", "a4");
-      doc.text("PDF generation unchanged...", 10, 10);
-      doc.save(`sytcore-report.pdf`);
-    } catch {
+
+      const pageW = 210;
+      const pageH = 297;
+      const margin = 12;
+      const contentW = pageW - margin * 2;
+      let y = margin;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(18);
+      doc.text(`${projectName || "SYTCORE"} Daily Report`, margin, y);
+      y += 10;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.text(`Report date: ${reportDate}`, margin, y);
+      y += 12;
+
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        doc.setFont("helvetica", "bold");
+        doc.text(`Entry #${i + 1}`, margin, y);
+        y += 6;
+
+        doc.setFont("helvetica", "normal");
+        const lines = doc.splitTextToSize(entry.text || "(empty)", contentW);
+        doc.text(lines, margin, y);
+        y += lines.length * 5 + 10;
+      }
+
+      doc.save(`sytcore-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error(err);
       setGlobalError("PDF generation failed.");
     }
   };
 
   return (
     <div className="wrapper">
+      {/* ✅ GLOBAL audio input (iOS Safari only) */}
+      {useNativeRecorder() && (
+        <input
+          ref={(el) => (audioInputRef.current["_global"] = el)}
+          type="file"
+          accept="audio/*"
+          capture="microphone"
+          hidden
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+
+            const entryId = audioInputRef.current.__targetEntryId;
+            if (!entryId) return;
+
+            const previewUrl = URL.createObjectURL(file);
+
+            updateEntry(entryId, {
+              audioBlob: file,
+              audioPreviewUrl: previewUrl,
+              error: null,
+            });
+
+            await transcribeBlob(entryId, file);
+            e.target.value = "";
+          }}
+        />
+      )}
+
       <div className="topBar">
         <div className="metaRow">
           <div className="metaField">
@@ -398,41 +471,15 @@ export default function UploadPanel() {
                 </button>
               </div>
 
-              {/* ✅ iOS Safari native file capture */}
-              {useNativeRecorder() && (
-                <input
-                  ref={(el) => (audioInputRef.current[entry.id] = el)}
-                  type="file"
-                  accept="audio/*"
-                  capture="microphone"
-                  hidden
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-
-                    const previewUrl = URL.createObjectURL(file);
-
-                    updateEntry(entry.id, {
-                      audioBlob: file,
-                      audioPreviewUrl: previewUrl,
-                      error: null,
-                    });
-
-                    await transcribeBlob(entry.id, file);
-
-                    e.target.value = "";
-                  }}
-                />
-              )}
-
               {entry.audioPreviewUrl && (
                 <audio className="audio" controls src={entry.audioPreviewUrl} />
               )}
 
               <div className="descBlock">
                 <p className="sectionTitle">Description</p>
-
-                {entry.transcribing && <p className="mutedSmall">Transcribing...</p>}
+                {entry.transcribing && (
+                  <p className="mutedSmall">Transcribing...</p>
+                )}
 
                 <textarea
                   className="textarea"
@@ -470,10 +517,6 @@ export default function UploadPanel() {
               </div>
 
               {entry.photos?.length > 0 && (
-                <p className="mutedSmall">✅ {entry.photos.length} photo(s) selected</p>
-              )}
-
-              {entry.photos?.length > 0 && (
                 <DndContext
                   collisionDetection={closestCenter}
                   onDragEnd={(event) => {
@@ -481,10 +524,16 @@ export default function UploadPanel() {
                     if (!over || active.id === over.id) return;
 
                     updateEntry(entry.id, (prev) => {
-                      const oldIndex = prev.photos.findIndex((p) => p.id === active.id);
-                      const newIndex = prev.photos.findIndex((p) => p.id === over.id);
+                      const oldIndex = prev.photos.findIndex(
+                        (p) => p.id === active.id
+                      );
+                      const newIndex = prev.photos.findIndex(
+                        (p) => p.id === over.id
+                      );
 
-                      return { photos: arrayMove(prev.photos, oldIndex, newIndex) };
+                      return {
+                        photos: arrayMove(prev.photos, oldIndex, newIndex),
+                      };
                     });
                   }}
                 >
