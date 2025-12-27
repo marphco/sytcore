@@ -3,6 +3,8 @@ import axios from "axios";
 import jsPDF from "jspdf";
 import "./UploadPanel.css";
 import { normalizeImage } from "../../utils/normalizeImage";
+import { startWavRecording, stopWavRecording } from "../../utils/wavRecorder";
+
 import {
   DndContext,
   closestCenter,
@@ -98,6 +100,9 @@ export default function UploadPanel() {
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
+
+  const wavRecorderRef = useRef(null);
+
 
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
@@ -237,7 +242,7 @@ export default function UploadPanel() {
       const formData = new FormData();
 
       // ✅ IMPORTANT: send blob directly (Safari safe)
-      const ext = audioBlob.type.includes("mp4") ? "m4a" : "aac";
+      const ext = "wav";
       formData.append("audio", audioBlob, `voice-note.${ext}`);
 
 
@@ -296,111 +301,48 @@ export default function UploadPanel() {
     setGlobalError(null);
     updateEntry(entryId, { error: null });
 
-    if (!hasMediaRecorder) {
-      updateEntry(entryId, { error: "Recording not supported on this device." });
-      return;
-    }
-
-    // blocco doppio click
-    if (mediaRecorderRef.current?.state === "recording") {
-      updateEntry(entryId, { error: "Already recording. Stop first." });
-      return;
-    }
-
     try {
-      cleanupRecording();
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      const mimeType = getSupportedMimeType();
-      if (!mimeType) {
-        updateEntry(entryId, {
-          error: "Safari cannot record audio (no supported mimeType).",
-        });
-        cleanupRecording();
-        return;
-      }
-
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          chunksRef.current.push(e.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        const safeChunks = [...chunksRef.current];
-
-        requestAnimationFrame(() => {
-          try {
-            const blob = new Blob(safeChunks, { type: mimeType });
-
-            if (!blob || blob.size === 0) {
-              updateEntry(entryId, {
-                recording: false,
-                error: "Recording failed (empty blob).",
-              });
-              cleanupRecording();
-              return;
-            }
-
-            const previewUrl = URL.createObjectURL(blob);
-
-            updateEntry(entryId, {
-              audioBlob: blob,
-              audioPreviewUrl: previewUrl,
-              recording: false,
-              error: null,
-            });
-
-            cleanupRecording();
-
-            setTimeout(() => {
-              transcribeBlob(entryId, blob);
-            }, 500);
-
-          } catch (err) {
-            console.error("Safari onstop crash:", err);
-            updateEntry(entryId, {
-              recording: false,
-              error: "Recording processing failed on Safari.",
-            });
-            cleanupRecording();
-          }
-        });
-      };
-
-      recorder.start(1000); // ✅ IMPORTANT: chunk every 1s
+      wavRecorderRef.current = await startWavRecording();
       updateEntry(entryId, { recording: true });
-
     } catch (err) {
-      console.error("startRecording error:", err);
+      console.error("startRecording WAV error:", err);
       updateEntry(entryId, {
         recording: false,
-        error: "Microphone permission denied or Safari error.",
+        error: "Microphone permission denied or recording failed.",
       });
-      cleanupRecording();
     }
   };
 
 
-  const stopRecording = (entryId) => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) return;
-
+  const stopRecording = async (entryId) => {
     try {
-      if (recorder.state !== "inactive") recorder.stop();
+      const recorder = wavRecorderRef.current;
+      if (!recorder) return;
+
+      updateEntry(entryId, { recording: false });
+
+      const wavBlob = stopWavRecording(recorder);
+      wavRecorderRef.current = null;
+
+      const previewUrl = URL.createObjectURL(wavBlob);
+
+      updateEntry(entryId, {
+        audioBlob: wavBlob,
+        audioPreviewUrl: previewUrl,
+        error: null,
+      });
+
+      // ✅ transcribe (WAV stable)
+      await transcribeBlob(entryId, wavBlob);
+
     } catch (err) {
-      console.error("stopRecording error:", err);
+      console.error("stopRecording WAV error:", err);
+      updateEntry(entryId, {
+        recording: false,
+        error: "Could not stop recording. Please retry.",
+      });
     }
-
-    updateEntry(entryId, { recording: false });
   };
-
 
 
   // ---------- Photos handler ----------
