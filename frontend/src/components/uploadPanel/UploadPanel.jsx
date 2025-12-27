@@ -3,6 +3,7 @@ import axios from "axios";
 import jsPDF from "jspdf";
 import "./UploadPanel.css";
 import { normalizeImage } from "../../utils/normalizeImage";
+import { startWavRecording, stopWavRecording } from "../../utils/wavRecorder";
 
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
@@ -15,7 +16,6 @@ import { CSS } from "@dnd-kit/utilities";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
-// ---------- Helpers ----------
 function createEntry() {
   return {
     id: crypto.randomUUID(),
@@ -33,7 +33,6 @@ function createEntry() {
 
 const LS_KEY = "sytcore_entries_v1";
 
-// ---------- Sortable Photo ----------
 function SortablePhoto({ photo, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: photo.id });
@@ -63,7 +62,6 @@ function SortablePhoto({ photo, onRemove }) {
   );
 }
 
-// ---------- iOS / Safari detection ----------
 const isIOS = () =>
   typeof navigator !== "undefined" &&
   /iPad|iPhone|iPod/.test(navigator.userAgent);
@@ -72,7 +70,7 @@ const isSafari = () =>
   typeof navigator !== "undefined" &&
   /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
-const useNativeRecorder = () => isIOS() && isSafari();
+const useNativeWav = () => isIOS() && isSafari();
 
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
@@ -86,19 +84,18 @@ export default function UploadPanel() {
   });
 
   const fileInputRef = useRef({});
-  const audioInputRef = useRef({});
 
-  // MediaRecorder refs (NON iOS Safari)
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
+
+  const wavRecorderRef = useRef(null);
 
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
-  // ---------- Load from localStorage ----------
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -122,54 +119,39 @@ export default function UploadPanel() {
     }
   }, []);
 
-  // ---------- Save to localStorage ----------
   useEffect(() => {
     try {
-      const minimal = {
-        projectName,
-        reportDate,
-        entries: entries.map((e) => ({
-          id: e.id,
-          transcript: e.transcript,
-          text: e.text,
-        })),
-      };
-      localStorage.setItem(LS_KEY, JSON.stringify(minimal));
-    } catch (err) {
-      console.error("localStorage save error:", err);
-    }
+      localStorage.setItem(
+        LS_KEY,
+        JSON.stringify({
+          projectName,
+          reportDate,
+          entries: entries.map((e) => ({
+            id: e.id,
+            transcript: e.transcript,
+            text: e.text,
+          })),
+        })
+      );
+    } catch {}
   }, [entries, projectName, reportDate]);
 
-  // ---------- Update entry ----------
   const updateEntry = (id, patch) => {
     setEntries((prev) =>
       prev.map((e) => {
         if (e.id !== id) return e;
-
         const resolvedPatch = typeof patch === "function" ? patch(e) : patch;
-        const finalPatch = { ...resolvedPatch };
-
-        if (typeof resolvedPatch.text === "function") {
-          finalPatch.text = resolvedPatch.text(e.text || "");
-        }
-
-        return { ...e, ...finalPatch };
+        return { ...e, ...resolvedPatch };
       })
     );
   };
 
-  // ---------- Transcribe blob ----------
   const transcribeBlob = async (entryId, audioBlob) => {
-    updateEntry(entryId, {
-      transcribing: true,
-      error: null,
-    });
+    updateEntry(entryId, { transcribing: true, error: null });
 
     try {
       const formData = new FormData();
-
-      const ext = audioBlob.type.includes("mp4") ? "m4a" : "webm";
-      formData.append("audio", audioBlob, `voice-note.${ext}`);
+      formData.append("audio", audioBlob, `voice-note.wav`);
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -178,87 +160,35 @@ export default function UploadPanel() {
 
       updateEntry(entryId, {
         transcript: tRes.data.transcript,
-        text: (prevText) =>
-          prevText ? `${prevText}\n${tRes.data.transcript}` : tRes.data.transcript,
+        text: tRes.data.transcript,
         transcribing: false,
       });
     } catch (err) {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
       updateEntry(entryId, {
         transcribing: false,
-        error:
-          err.code === "ECONNABORTED"
-            ? "Transcription timed out. Try again."
-            : err?.response?.data?.error || "Transcription failed.",
+        error: err?.response?.data?.error || "Transcription failed.",
       });
     }
-  };
-
-  // ---------- Add photos ----------
-  const addPhotosToEntry = async (entryId, files) => {
-    if (!files || files.length === 0) return;
-
-    updateEntry(entryId, { uploading: true, error: null });
-
-    try {
-      const newPhotos = [];
-
-      for (const file of files) {
-        const normalizedBlob = await normalizeImage(file);
-        const url = URL.createObjectURL(normalizedBlob);
-
-        newPhotos.push({
-          id: crypto.randomUUID(),
-          file,
-          blob: normalizedBlob,
-          url,
-        });
-      }
-
-      updateEntry(entryId, (prev) => ({
-        photos: [...prev.photos, ...newPhotos],
-        uploading: false,
-      }));
-    } catch (err) {
-      console.error(err);
-      updateEntry(entryId, {
-        uploading: false,
-        error: "Failed to process photos.",
-      });
-    }
-  };
-
-  // ---------- MediaRecorder recording (NON iOS Safari) ----------
-  const getSupportedMimeType = () => {
-    const types = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"];
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
   };
 
   const startRecording = async (entryId) => {
-    setGlobalError(null);
     updateEntry(entryId, { error: null });
-
-    // ✅ iOS Safari -> native recorder
-    if (useNativeRecorder()) {
-      audioInputRef.current.__targetEntryId = entryId;
-      audioInputRef.current["_global"]?.click();
-      return;
-    }
-
-    if (!hasMediaRecorder) {
-      updateEntry(entryId, { error: "Recording not supported on this device." });
-      return;
-    }
+    setGlobalError(null);
 
     try {
+      // ✅ iOS Safari = WAV recorder
+      if (useNativeWav()) {
+        wavRecorderRef.current = await startWavRecording();
+        updateEntry(entryId, { recording: true });
+        return;
+      }
+
+      // ✅ Desktop/Android = MediaRecorder
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const mimeType = getSupportedMimeType();
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
-
+      const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
       chunksRef.current = [];
 
@@ -266,9 +196,8 @@ export default function UploadPanel() {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
-
         const previewUrl = URL.createObjectURL(blob);
 
         updateEntry(entryId, {
@@ -278,7 +207,7 @@ export default function UploadPanel() {
         });
 
         stream.getTracks().forEach((t) => t.stop());
-        transcribeBlob(entryId, blob);
+        await transcribeBlob(entryId, blob);
       };
 
       recorder.start();
@@ -292,149 +221,38 @@ export default function UploadPanel() {
     }
   };
 
-  const stopRecording = (entryId) => {
-    if (useNativeRecorder()) return; // iOS native handles itself
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) return;
-    if (recorder.state === "inactive") return;
-    recorder.stop();
-    updateEntry(entryId, { recording: false });
-  };
-
-  // ---------- Reset Entry ----------
-  const resetEntry = (entryId) => {
-    setEntries((prev) =>
-      prev.map((e) => {
-        if (e.id !== entryId) return e;
-        if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
-        e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
-        return { ...createEntry(), id: e.id };
-      })
-    );
-  };
-
-  const addEntry = () => setEntries((prev) => [...prev, createEntry()]);
-
-  const clearReport = () => {
-    if (!confirm("Clear all entries?")) return;
-    entries.forEach((e) => {
-      if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
-      e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
-    });
-    localStorage.removeItem(LS_KEY);
-    setEntries([createEntry()]);
-  };
-
-  // ---------- PDF ----------
-  const generatePDF = async () => {
-    setGlobalError(null);
-
+  const stopRecording = async (entryId) => {
     try {
-      const doc = new jsPDF("p", "mm", "a4");
+      if (useNativeWav()) {
+        const wavBlob = stopWavRecording(wavRecorderRef.current);
+        wavRecorderRef.current = null;
 
-      const pageW = 210;
-      const pageH = 297;
-      const margin = 12;
-      const contentW = pageW - margin * 2;
-      let y = margin;
+        const previewUrl = URL.createObjectURL(wavBlob);
+        updateEntry(entryId, {
+          audioBlob: wavBlob,
+          audioPreviewUrl: previewUrl,
+          recording: false,
+        });
 
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(18);
-      doc.text(`${projectName || "SYTCORE"} Daily Report`, margin, y);
-      y += 10;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(11);
-      doc.text(`Report date: ${reportDate}`, margin, y);
-      y += 12;
-
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        doc.setFont("helvetica", "bold");
-        doc.text(`Entry #${i + 1}`, margin, y);
-        y += 6;
-
-        doc.setFont("helvetica", "normal");
-        const lines = doc.splitTextToSize(entry.text || "(empty)", contentW);
-        doc.text(lines, margin, y);
-        y += lines.length * 5 + 10;
+        await transcribeBlob(entryId, wavBlob);
+        return;
       }
 
-      doc.save(`sytcore-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+      const recorder = mediaRecorderRef.current;
+      if (!recorder) return;
+      recorder.stop();
+      updateEntry(entryId, { recording: false });
     } catch (err) {
-      console.error(err);
-      setGlobalError("PDF generation failed.");
+      console.error("stopRecording error:", err);
+      updateEntry(entryId, {
+        recording: false,
+        error: "Could not stop recording.",
+      });
     }
   };
 
   return (
     <div className="wrapper">
-      {/* ✅ GLOBAL audio input (iOS Safari only) */}
-      {useNativeRecorder() && (
-        <input
-          ref={(el) => (audioInputRef.current["_global"] = el)}
-          type="file"
-          accept="audio/*"
-          capture="microphone"
-          hidden
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-
-            const entryId = audioInputRef.current.__targetEntryId;
-            if (!entryId) return;
-
-            const previewUrl = URL.createObjectURL(file);
-
-            updateEntry(entryId, {
-              audioBlob: file,
-              audioPreviewUrl: previewUrl,
-              error: null,
-            });
-
-            await transcribeBlob(entryId, file);
-            e.target.value = "";
-          }}
-        />
-      )}
-
-      <div className="topBar">
-        <div className="metaRow">
-          <div className="metaField">
-            <label>Project</label>
-            <input
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="Project name..."
-              className="metaInput"
-            />
-          </div>
-
-          <div className="metaField">
-            <label>Report date</label>
-            <input
-              type="date"
-              value={reportDate}
-              onChange={(e) => setReportDate(e.target.value)}
-              className="metaInput"
-            />
-          </div>
-        </div>
-
-        <h2 className="title">SYTCORE Daily Report</h2>
-
-        <div className="topActions">
-          <button className="btnPrimaryGhost" onClick={generatePDF}>
-            Generate PDF
-          </button>
-          <button className="btnDanger" onClick={clearReport}>
-            Clear Report
-          </button>
-        </div>
-      </div>
-
-      {globalError && <p className="error">{globalError}</p>}
-
       <div className="entries">
         {entries.map((entry, idx) => (
           <div key={entry.id} className="entryCard">
@@ -446,7 +264,6 @@ export default function UploadPanel() {
                   <button
                     className="btn"
                     onClick={() => startRecording(entry.id)}
-                    disabled={entry.transcribing}
                     type="button"
                   >
                     🎙 Record
@@ -460,112 +277,19 @@ export default function UploadPanel() {
                     ⏹ Stop
                   </button>
                 )}
-
-                <button
-                  className="btnGhost"
-                  onClick={() => resetEntry(entry.id)}
-                  disabled={entry.transcribing}
-                  type="button"
-                >
-                  🗑 Reset
-                </button>
               </div>
 
               {entry.audioPreviewUrl && (
                 <audio className="audio" controls src={entry.audioPreviewUrl} />
               )}
 
-              <div className="descBlock">
-                <p className="sectionTitle">Description</p>
-                {entry.transcribing && (
-                  <p className="mutedSmall">Transcribing...</p>
-                )}
+              {entry.transcribing && <p className="mutedSmall">Transcribing...</p>}
 
-                <textarea
-                  className="textarea"
-                  value={entry.text || ""}
-                  onChange={(e) => updateEntry(entry.id, { text: e.target.value })}
-                  placeholder="Your description will appear here after transcription… but you can edit it."
-                />
-
-                {entry.error && <p className="error">{entry.error}</p>}
-              </div>
-            </div>
-
-            <div className="rightCol">
-              <p className="sectionTitle">Photos</p>
-
-              <div
-                className="dropzone"
-                onClick={() => fileInputRef.current[entry.id]?.click()}
-              >
-                <input
-                  ref={(el) => (fileInputRef.current[entry.id] = el)}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  hidden
-                  onChange={async (e) => {
-                    const files = Array.from(e.target.files || []);
-                    await addPhotosToEntry(entry.id, files);
-                    e.target.value = "";
-                  }}
-                />
-                <p className="dropzoneText">
-                  Drag & drop photos here <span>or click to select</span>
-                </p>
-              </div>
-
-              {entry.photos?.length > 0 && (
-                <DndContext
-                  collisionDetection={closestCenter}
-                  onDragEnd={(event) => {
-                    const { active, over } = event;
-                    if (!over || active.id === over.id) return;
-
-                    updateEntry(entry.id, (prev) => {
-                      const oldIndex = prev.photos.findIndex(
-                        (p) => p.id === active.id
-                      );
-                      const newIndex = prev.photos.findIndex(
-                        (p) => p.id === over.id
-                      );
-
-                      return {
-                        photos: arrayMove(prev.photos, oldIndex, newIndex),
-                      };
-                    });
-                  }}
-                >
-                  <SortableContext
-                    items={entry.photos.map((p) => p.id)}
-                    strategy={rectSortingStrategy}
-                  >
-                    <div className="grid">
-                      {entry.photos.map((photo) => (
-                        <SortablePhoto
-                          key={photo.id}
-                          photo={photo}
-                          onRemove={(p) => {
-                            URL.revokeObjectURL(p.url);
-                            updateEntry(entry.id, (prev) => ({
-                              photos: prev.photos.filter((x) => x.id !== p.id),
-                            }));
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </DndContext>
-              )}
+              {entry.error && <p className="error">{entry.error}</p>}
             </div>
           </div>
         ))}
       </div>
-
-      <button className="addEntryBtn" onClick={addEntry}>
-        ➕ Add Entry
-      </button>
     </div>
   );
 }
