@@ -3,6 +3,7 @@ import axios from "axios";
 import jsPDF from "jspdf";
 import "./UploadPanel.css";
 import { normalizeImage } from "../../utils/normalizeImage";
+import { Canvg } from "canvg";
 
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
@@ -36,7 +37,6 @@ function createEntry() {
 
 const LS_KEY = "sytcore_entries_v1";
 
-// ✅ prevent React crash if error is object
 function safeErrorMessage(err) {
   if (!err) return null;
   if (typeof err === "string") return err;
@@ -89,7 +89,11 @@ export default function UploadPanel() {
     return d.toISOString().slice(0, 10);
   });
 
+  // ✅ Logo state
+  const [logoDataUrl, setLogoDataUrl] = useState(null);
+
   const fileInputRef = useRef({});
+  const logoInputRef = useRef(null);
 
   // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
@@ -111,6 +115,8 @@ export default function UploadPanel() {
       setProjectName(saved.projectName || "");
       setReportDate(saved.reportDate || new Date().toISOString().slice(0, 10));
 
+      if (saved.logoDataUrl) setLogoDataUrl(saved.logoDataUrl);
+
       const restored = (saved.entries || []).map((e) => ({
         ...createEntry(),
         id: e.id || crypto.randomUUID(),
@@ -131,6 +137,7 @@ export default function UploadPanel() {
       const minimal = {
         projectName,
         reportDate,
+        logoDataUrl,
         entries: entries.map((e) => ({
           id: e.id,
           transcript: e.transcript,
@@ -141,7 +148,7 @@ export default function UploadPanel() {
     } catch (err) {
       console.error("localStorage save error:", err);
     }
-  }, [entries, projectName, reportDate]);
+  }, [entries, projectName, reportDate, logoDataUrl]);
 
   // ---------- Update entry ----------
   const updateEntry = (id, patch) => {
@@ -161,6 +168,50 @@ export default function UploadPanel() {
     );
   };
 
+  // ✅ Delete Entry
+  const deleteEntry = (entryId) => {
+    if (!confirm("Delete this entry?")) return;
+
+    setEntries((prev) => {
+      const target = prev.find((e) => e.id === entryId);
+
+      if (target?.audioPreviewUrl) URL.revokeObjectURL(target.audioPreviewUrl);
+      target?.photos?.forEach((p) => URL.revokeObjectURL(p.url));
+
+      const filtered = prev.filter((e) => e.id !== entryId);
+      return filtered.length > 0 ? filtered : [createEntry()];
+    });
+  };
+
+  // ---------- LOGO UPLOAD (PNG/JPG/WebP + SVG) ----------
+  const handleLogoUpload = async (file) => {
+    if (!file) return;
+
+    try {
+      if (file.type === "image/svg+xml") {
+        const svgText = await file.text();
+        const canvas = document.createElement("canvas");
+        canvas.width = 800;
+        canvas.height = 800;
+        const ctx = canvas.getContext("2d");
+
+        const v = await Canvg.fromString(ctx, svgText);
+        await v.render();
+
+        const pngDataUrl = canvas.toDataURL("image/png");
+        setLogoDataUrl(pngDataUrl);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => setLogoDataUrl(reader.result);
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error(err);
+      setGlobalError("Logo upload failed.");
+    }
+  };
+
   // ---------- Transcribe blob ----------
   const transcribeBlob = async (entryId, audioBlob) => {
     updateEntry(entryId, {
@@ -176,19 +227,12 @@ export default function UploadPanel() {
       return;
     }
 
-    console.log("➡️ TRANSCRIBE URL:", `${API_URL}/api/transcribe-file`);
-
     try {
-      if (!API_URL) {
-        throw new Error("VITE_API_URL is missing. Check your .env");
-      }
-
       const formData = new FormData();
       const ext = audioBlob.type?.includes("mp4") ? "m4a" : "webm";
       formData.append("audio", audioBlob, `voice-note.${ext}`);
 
       const url = `${API_URL}/api/transcribe-file`;
-      console.log("🎯 TRANSCRIBE URL:", url);
 
       const tRes = await axios.post(url, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -198,13 +242,12 @@ export default function UploadPanel() {
       updateEntry(entryId, {
         transcript: tRes.data.transcript,
         text: (prevText) =>
-          prevText ? `${prevText}\n${tRes.data.transcript}` : tRes.data.transcript,
+          prevText
+            ? `${prevText}\n${tRes.data.transcript}`
+            : tRes.data.transcript,
         transcribing: false,
       });
     } catch (err) {
-      console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
-
-      // ✅ ALWAYS convert to string (prevents React crash)
       const serverErr = err?.response?.data?.error || err?.response?.data;
       const msg =
         err.code === "ECONNABORTED"
@@ -324,18 +367,14 @@ export default function UploadPanel() {
     }
   };
 
-  const stopRecording = (entryId) => {
+  const stopRecording = () => {
     try {
       const recorder = mediaRecorderRef.current;
       if (!recorder) return;
       if (recorder.state === "inactive") return;
       recorder.stop();
-      updateEntry(entryId, { recording: false });
     } catch (err) {
-      updateEntry(entryId, {
-        recording: false,
-        error: safeErrorMessage(err),
-      });
+      console.error(err);
     }
   };
 
@@ -353,14 +392,18 @@ export default function UploadPanel() {
 
   const addEntry = () => setEntries((prev) => [...prev, createEntry()]);
 
+  // ✅ Clear Report
   const clearReport = () => {
     if (!confirm("Clear all entries?")) return;
+
     entries.forEach((e) => {
       if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
       e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
     });
+
     localStorage.removeItem(LS_KEY);
     setEntries([createEntry()]);
+    setLogoDataUrl(null);
   };
 
   // ---------- PDF ----------
@@ -369,17 +412,216 @@ export default function UploadPanel() {
 
     try {
       const doc = new jsPDF("p", "mm", "a4");
-      doc.text(`${projectName || "SYTCORE"} Daily Report`, 12, 20);
-      doc.text(`Report date: ${reportDate}`, 12, 30);
 
-      let y = 45;
-      entries.forEach((e, i) => {
-        doc.text(`Entry #${i + 1}`, 12, y);
-        y += 6;
-        const lines = doc.splitTextToSize(e.text || "(empty)", 180);
-        doc.text(lines, 12, y);
-        y += lines.length * 5 + 10;
-      });
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+
+      const marginX = 14;
+      const bottomMargin = 16;
+      let y = 0;
+
+      const ensureSpace = (needed) => {
+        if (y + needed > pageH - bottomMargin) {
+          doc.addPage();
+          drawHeader(false);
+        }
+      };
+
+      const drawImageContain = (dataUrl, x, yPos, boxW, boxH) => {
+        const props = doc.getImageProperties(dataUrl);
+        const imgW = props.width;
+        const imgH = props.height;
+
+        const imgRatio = imgW / imgH;
+        const boxRatio = boxW / boxH;
+
+        let drawW, drawH;
+
+        if (imgRatio > boxRatio) {
+          drawW = boxW;
+          drawH = boxW / imgRatio;
+        } else {
+          drawH = boxH;
+          drawW = boxH * imgRatio;
+        }
+
+        const offsetX = x + (boxW - drawW) / 2;
+        const offsetY = yPos + (boxH - drawH) / 2;
+
+        doc.addImage(
+          dataUrl,
+          dataUrl.includes("png") ? "PNG" : "JPEG",
+          offsetX,
+          offsetY,
+          drawW,
+          drawH
+        );
+      };
+
+      const drawHeader = (isFirstPage) => {
+        const headerTop = isFirstPage ? 12 : 8;
+
+        // ✅ bigger logo
+        const logoBox = isFirstPage ? 24 : 14;
+
+        const titleSize = isFirstPage ? 15 : 11;
+        const metaSize = isFirstPage ? 11 : 9;
+
+        // ✅ LOGO (always keep aspect ratio)
+        if (logoDataUrl) {
+          drawImageContain(logoDataUrl, marginX, headerTop, logoBox, logoBox);
+        }
+
+        // ✅ centered title (premium)
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(titleSize);
+
+        const titleY = headerTop + (isFirstPage ? 11 : 9);
+        doc.text("Daily Report", pageW / 2, titleY, { align: "center" });
+
+        // ✅ right meta (2 lines)
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(metaSize);
+        doc.setTextColor(80);
+
+        const rightX = pageW - marginX;
+
+        if (projectName && projectName.trim()) {
+          doc.text(projectName, rightX, headerTop + 7, { align: "right" });
+        }
+
+        doc.text(`Report date: ${reportDate}`, rightX, headerTop + 13, {
+          align: "right",
+        });
+
+        doc.setTextColor(0);
+
+        // ✅ spacing after header
+        y = isFirstPage ? headerTop + logoBox + 14 : headerTop + logoBox + 10;
+      };
+
+
+      // First page header
+      drawHeader(true);
+
+      // Entries
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+
+        const isEmpty =
+          (!e.text || e.text.trim() === "") &&
+          (!e.photos || e.photos.length === 0);
+
+        if (isEmpty) continue;
+
+        const boxX = marginX;
+        const boxW = pageW - marginX * 2;
+        const padding = 6;
+
+        const textLines = doc.splitTextToSize(
+          e.text || "",
+          boxW - padding * 4
+        );
+        const textH = Math.max(18, textLines.length * 5 + 10);
+
+        const photos = e.photos?.slice(0, 4) || [];
+        const hasPhotos = photos.length > 0;
+
+        const gridGap = 6;
+        const gridW = boxW - padding * 2;
+
+        const imgW = (gridW - gridGap) / 2;
+        const imgH = 55;
+
+        const photoRows = photos.length > 2 ? 2 : photos.length > 0 ? 1 : 0;
+        const photosH =
+          photoRows > 0
+            ? photoRows * imgH + (photoRows - 1) * gridGap
+            : 0;
+
+        const entryH =
+          padding + textH + (hasPhotos ? 10 + 6 + photosH : 0) + padding;
+
+        ensureSpace(entryH + 10);
+
+        // Container
+        doc.setDrawColor(220);
+        doc.roundedRect(boxX, y, boxW, entryH, 4, 4);
+
+        let innerY = y + padding;
+
+        // Description box
+        doc.setDrawColor(200);
+        doc.roundedRect(
+          boxX + padding,
+          innerY,
+          boxW - padding * 2,
+          textH,
+          3,
+          3
+        );
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        doc.text(textLines, boxX + padding * 2, innerY + 7);
+
+        innerY += textH + 10;
+
+        // Photos
+        if (hasPhotos) {
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(11);
+          doc.text("Photos", boxX + padding, innerY);
+          innerY += 6;
+
+          for (let p = 0; p < photos.length; p++) {
+            const photo = photos[p];
+            const col = p % 2;
+            const row = Math.floor(p / 2);
+
+            const x = boxX + padding + col * (imgW + gridGap);
+            const imgY = innerY + row * (imgH + gridGap);
+
+            doc.setDrawColor(220);
+            doc.roundedRect(x, imgY, imgW, imgH, 3, 3);
+
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(photo.blob || photo.file);
+            });
+
+            drawImageContain(dataUrl, x + 1, imgY + 1, imgW - 2, imgH - 2);
+          }
+        }
+
+        y += entryH + 12;
+      }
+
+      // Footer pagination
+      const totalPages = doc.getNumberOfPages();
+
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+
+        // redraw correct header
+        drawHeader(p === 1);
+
+        // footer
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(140);
+
+        doc.text(
+          `Page ${p} / ${totalPages}`,
+          pageW / 2,
+          pageH - 10,
+          { align: "center" }
+        );
+
+        doc.setTextColor(0);
+      }
 
       doc.save(`sytcore-report-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (err) {
@@ -423,6 +665,29 @@ export default function UploadPanel() {
             Clear Report
           </button>
         </div>
+
+        {/* ✅ LOGO UPLOAD */}
+        <div style={{ marginTop: 6 }}>
+          <button
+            className="btnGhost"
+            type="button"
+            onClick={() => logoInputRef.current?.click()}
+          >
+            {logoDataUrl ? "✅ Logo Added (Change)" : "➕ Add Logo"}
+          </button>
+
+          <input
+            ref={logoInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/jpg,image/webp,image/svg+xml"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              handleLogoUpload(file);
+              e.target.value = "";
+            }}
+          />
+        </div>
       </div>
 
       {globalError && <p className="error">{globalError}</p>}
@@ -444,11 +709,7 @@ export default function UploadPanel() {
                     🎙 Record
                   </button>
                 ) : (
-                  <button
-                    className="btn"
-                    onClick={() => stopRecording(entry.id)}
-                    type="button"
-                  >
+                  <button className="btn" onClick={stopRecording} type="button">
                     ⏹ Stop
                   </button>
                 )}
@@ -460,6 +721,15 @@ export default function UploadPanel() {
                   type="button"
                 >
                   🗑 Reset
+                </button>
+
+                <button
+                  className="btnDanger"
+                  onClick={() => deleteEntry(entry.id)}
+                  disabled={entry.transcribing}
+                  type="button"
+                >
+                  ❌ Delete
                 </button>
               </div>
 
@@ -477,11 +747,15 @@ export default function UploadPanel() {
                 <textarea
                   className="textarea"
                   value={entry.text || ""}
-                  onChange={(e) => updateEntry(entry.id, { text: e.target.value })}
+                  onChange={(e) =>
+                    updateEntry(entry.id, { text: e.target.value })
+                  }
                   placeholder="Your description will appear here after transcription… but you can edit it."
                 />
 
-                {entry.error && <p className="error">{safeErrorMessage(entry.error)}</p>}
+                {entry.error && (
+                  <p className="error">{safeErrorMessage(entry.error)}</p>
+                )}
               </div>
             </div>
 
