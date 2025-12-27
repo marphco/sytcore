@@ -1,34 +1,140 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
+import "./UploadPanel.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
+// ---------- Helpers ----------
+function createEntry() {
+  return {
+    id: crypto.randomUUID(),
+
+    // audio
+    audioBlob: null,
+    audioPreviewUrl: null,
+    audioRemoteUrl: null,
+
+    // photos
+    photoFiles: [],
+    photoRemoteUrls: [],
+
+    // transcript
+    transcript: null,
+
+    // states
+    recording: false,
+    uploading: false,
+    transcribing: false,
+    error: null,
+  };
+}
+
+// localStorage key
+const LS_KEY = "sytcore_entries_v1";
+
 export default function UploadPanel() {
-  const [photoFiles, setPhotoFiles] = useState([]);
+  const [entries, setEntries] = useState([createEntry()]);
+  const [globalError, setGlobalError] = useState(null);
 
-  // MediaRecorder
-  const [recording, setRecording] = useState(false);
-  const [audioBlob, setAudioBlob] = useState(null);
-  const [audioUrl, setAudioUrl] = useState(null);
+  // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
   const chunksRef = useRef([]);
-
-  // UI
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
+  const activeEntryIdRef = useRef(null);
 
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
-  // ---------- Start recording ----------
-  const startRecording = async () => {
-    setError(null);
+  // ---------- Load from localStorage ----------
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+
+      const restored = saved.map((e) => ({
+        ...createEntry(),
+        id: e.id || crypto.randomUUID(),
+        audioRemoteUrl: e.audioRemoteUrl || null,
+        photoRemoteUrls: e.photoRemoteUrls || [],
+        transcript: e.transcript || null,
+      }));
+
+      if (restored.length > 0) setEntries(restored);
+    } catch (err) {
+      console.error("localStorage load error:", err);
+    }
+  }, []);
+
+  // ---------- Save to localStorage ----------
+  useEffect(() => {
+    try {
+      const minimal = entries.map((e) => ({
+        id: e.id,
+        audioRemoteUrl: e.audioRemoteUrl,
+        photoRemoteUrls: e.photoRemoteUrls,
+        transcript: e.transcript,
+      }));
+      localStorage.setItem(LS_KEY, JSON.stringify(minimal));
+    } catch (err) {
+      console.error("localStorage save error:", err);
+    }
+  }, [entries]);
+
+  // ---------- Update entry ----------
+  const updateEntry = (id, patch) => {
+    setEntries((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, ...patch } : e))
+    );
+  };
+
+  // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB (NO UPLOAD NEEDED)
+  const transcribeBlob = async (entryId, audioBlob) => {
+    updateEntry(entryId, { transcribing: true, transcript: null, error: null });
+
+    try {
+      const formData = new FormData();
+      formData.append("audio", audioBlob, "voice-note.webm");
+
+      const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      updateEntry(entryId, {
+        transcript: tRes.data.transcript || "",
+        transcribing: false,
+      });
+    } catch (err) {
+      console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
+      updateEntry(entryId, {
+        transcribing: false,
+        error: err?.response?.data?.error || "Transcription failed.",
+      });
+    }
+  };
+
+  // ---------- Recording ----------
+  const startRecording = async (entryId) => {
+    setGlobalError(null);
+    updateEntry(entryId, { error: null });
+
+    // block if already recording another entry
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state === "recording"
+    ) {
+      updateEntry(entryId, {
+        error: "Already recording another entry. Stop it first.",
+      });
+      return;
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      activeEntryIdRef.current = entryId;
 
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
@@ -38,231 +144,247 @@ export default function UploadPanel() {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const blob = new Blob(chunksRef.current, {
           type: recorder.mimeType || "audio/webm",
         });
 
-        setAudioBlob(blob);
-        setAudioUrl(URL.createObjectURL(blob));
+        const previewUrl = URL.createObjectURL(blob);
 
-        // stop all tracks (important on iPhone)
+        updateEntry(entryId, {
+          audioBlob: blob,
+          audioPreviewUrl: previewUrl,
+          recording: false,
+          transcript: null,
+          error: null,
+        });
+
+        // stop mic
         stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        activeEntryIdRef.current = null;
+
+        // ✅ AUTO TRANSCRIBE RIGHT HERE
+        await transcribeBlob(entryId, blob);
       };
 
       recorder.start();
-      setRecording(true);
+      updateEntry(entryId, { recording: true });
     } catch (err) {
       console.error(err);
-      setError("Microphone permission denied or recording error.");
+      updateEntry(entryId, {
+        recording: false,
+        error: "Microphone permission denied or recording error.",
+      });
     }
   };
 
-  // ---------- Stop recording ----------
-  const stopRecording = () => {
+  const stopRecording = (entryId) => {
     if (!mediaRecorderRef.current) return;
     mediaRecorderRef.current.stop();
-    setRecording(false);
+    updateEntry(entryId, { recording: false });
   };
 
-  const resetAudio = () => {
-    setAudioBlob(null);
-    setAudioUrl(null);
-    setRecording(false);
+  const resetEntry = (entryId) => {
+    setEntries((prev) =>
+      prev.map((e) => {
+        if (e.id !== entryId) return e;
+        if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
+
+        return {
+          ...createEntry(),
+          id: e.id,
+        };
+      })
+    );
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+
+    mediaRecorderRef.current = null;
+    activeEntryIdRef.current = null;
   };
 
-  // ---------- Upload ----------
-  const handleUpload = async () => {
-    const hasAudio = !!audioBlob;
-    const hasPhotos = photoFiles.length > 0;
-
-    if (!hasAudio && !hasPhotos) {
-      setError("Please add at least one voice note or photo.");
+  // ---------- Upload Entry (ONLY for saving media remote) ----------
+  const uploadEntry = async (entry) => {
+    if (!entry.audioBlob && entry.photoFiles.length === 0) {
+      updateEntry(entry.id, {
+        error: "Please add a voice note OR at least one photo.",
+      });
       return;
     }
 
-    setLoading(true);
-    setError(null);
-    setResult(null);
+    updateEntry(entry.id, {
+      uploading: true,
+      error: null,
+    });
 
     try {
       const formData = new FormData();
 
-      if (audioBlob) {
-        const file = new File([audioBlob], "voice-note.webm", {
-          type: audioBlob.type || "audio/webm",
+      if (entry.audioBlob) {
+        const audioFile = new File([entry.audioBlob], `voice-note.webm`, {
+          type: entry.audioBlob.type || "audio/webm",
         });
-        formData.append("audio", file);
+        formData.append("audio", audioFile);
       }
 
-      photoFiles.forEach((p) => formData.append("photos", p));
+      entry.photoFiles.forEach((p) => formData.append("photos", p));
 
-      const res = await axios.post(`${API_URL}/api/upload`, formData, {
+      const uploadRes = await axios.post(`${API_URL}/api/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setResult(res.data);
+      const { audioUrl, photoUrls } = uploadRes.data;
+
+      updateEntry(entry.id, {
+        audioRemoteUrl: audioUrl,
+        photoRemoteUrls: photoUrls || [],
+      });
     } catch (err) {
-      console.error(err);
-      setError("Upload failed. Check console/logs.");
+      console.error("UPLOAD ERROR:", err?.response?.data || err.message);
+      updateEntry(entry.id, {
+        error: err?.response?.data?.error || "Upload failed.",
+      });
     } finally {
-      setLoading(false);
+      updateEntry(entry.id, { uploading: false });
     }
   };
 
+  // ---------- Add Entry ----------
+  const addEntry = () => {
+    setEntries((prev) => [...prev, createEntry()]);
+  };
+
+  // ---------- Clear all ----------
+  const clearReport = () => {
+    if (!confirm("Clear all entries?")) return;
+
+    entries.forEach((e) => {
+      if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
+    });
+
+    localStorage.removeItem(LS_KEY);
+    setEntries([createEntry()]);
+  };
+
   return (
-    <div style={{ maxWidth: 420, margin: "0 auto", padding: 16 }}>
-      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>
-        SYTCORE Upload
-      </h2>
+    <div className="wrapper">
+      <div className="topBar">
+        <h2 className="title">SYTCORE Daily Report</h2>
 
-      {/* VOICE NOTE */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-          Voice Note (optional)
-        </label>
+        <button className="btnDanger" onClick={clearReport}>
+          Clear Report
+        </button>
+      </div>
 
-        {!hasMediaRecorder ? (
-          <p style={{ fontSize: 12, opacity: 0.8 }}>
-            Recording is not supported on this browser.
-          </p>
-        ) : (
-          <>
-            <div style={{ display: "flex", gap: 10 }}>
-              {!recording ? (
-                <button
-                  onClick={startRecording}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 10,
-                    border: "none",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  🎙 Record
-                </button>
-              ) : (
-                <button
-                  onClick={stopRecording}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 10,
-                    border: "none",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
-                >
-                  ⏹ Stop
-                </button>
-              )}
+      {!hasMediaRecorder && (
+        <p className="muted">
+          Recording is not supported on this browser. Use Safari/Chrome.
+        </p>
+      )}
 
-              {audioBlob && (
+      {globalError && <p className="error">{globalError}</p>}
+
+      <div className="entries">
+        {entries.map((entry, idx) => (
+          <div key={entry.id} className="entryCard">
+            {/* LEFT */}
+            <div className="leftCol">
+              <p className="entryHeader">Entry #{idx + 1}</p>
+
+              <div className="controlsRow">
+                {!entry.recording ? (
+                  <button
+                    className="btn"
+                    onClick={() => startRecording(entry.id)}
+                    disabled={!hasMediaRecorder || entry.uploading}
+                  >
+                    🎙 Record
+                  </button>
+                ) : (
+                  <button className="btn" onClick={() => stopRecording(entry.id)}>
+                    ⏹ Stop
+                  </button>
+                )}
+
                 <button
-                  onClick={resetAudio}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 10,
-                    border: "none",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
+                  className="btnGhost"
+                  onClick={() => resetEntry(entry.id)}
+                  disabled={entry.uploading || entry.transcribing}
                 >
                   🗑 Reset
                 </button>
+              </div>
+
+              {entry.audioPreviewUrl && (
+                <audio className="audio" controls src={entry.audioPreviewUrl} />
               )}
+
+              <p className="sectionTitle">Transcript</p>
+
+              <div className="transcriptBox">
+                {entry.transcribing ? (
+                  <span className="muted">Transcribing...</span>
+                ) : entry.transcript ? (
+                  entry.transcript
+                ) : (
+                  <span className="muted">No transcript yet.</span>
+                )}
+              </div>
             </div>
 
-            {audioUrl && (
-              <div style={{ marginTop: 10 }}>
-                <audio controls src={audioUrl} style={{ width: "100%" }} />
-              </div>
-            )}
-          </>
-        )}
+            {/* RIGHT */}
+            <div className="rightCol">
+              <p className="sectionTitle">Photos</p>
+
+              <input
+                className="fileInput"
+                type="file"
+                accept="image/*"
+                multiple
+                disabled={entry.uploading}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+                  updateEntry(entry.id, { photoFiles: files });
+                }}
+              />
+
+              {entry.photoFiles.length > 0 && (
+                <p className="mutedSmall">
+                  ✅ {entry.photoFiles.length} photo(s) selected
+                </p>
+              )}
+
+              {entry.photoRemoteUrls?.length > 0 && (
+                <div className="grid">
+                  {entry.photoRemoteUrls.map((url) => (
+                    <a key={url} href={url} target="_blank" rel="noreferrer">
+                      <img className="thumb" src={url} alt="uploaded" />
+                    </a>
+                  ))}
+                </div>
+              )}
+
+              <button
+                className="btnPrimary"
+                onClick={() => uploadEntry(entry)}
+                disabled={entry.uploading || entry.transcribing}
+              >
+                {entry.uploading ? "Uploading..." : "Upload Entry"}
+              </button>
+
+              {entry.error && <p className="error">{entry.error}</p>}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* PHOTOS */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-          Photos (1+)
-        </label>
-
-        <input
-          type="file"
-          accept="image/*"
-          multiple
-          onChange={(e) => setPhotoFiles(Array.from(e.target.files || []))}
-        />
-
-        {photoFiles.length > 0 && (
-          <p style={{ fontSize: 12, marginTop: 6 }}>
-            ✅ {photoFiles.length} photos selected
-          </p>
-        )}
-      </div>
-
-      {/* BUTTON */}
-      <button
-        onClick={handleUpload}
-        disabled={loading}
-        style={{
-          width: "100%",
-          padding: "12px 14px",
-          borderRadius: 10,
-          border: "none",
-          fontWeight: 700,
-          cursor: "pointer",
-        }}
-      >
-        {loading ? "Uploading..." : "Upload"}
+      <button className="addEntryBtn" onClick={addEntry}>
+        ➕ Add Entry
       </button>
-
-      {/* ERROR */}
-      {error && (
-        <p style={{ color: "red", marginTop: 12, fontSize: 13 }}>{error}</p>
-      )}
-
-      {/* RESULT */}
-      {result && (
-        <div style={{ marginTop: 18 }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
-            Result
-          </h3>
-
-          {result.audioUrl && (
-            <div style={{ marginBottom: 10 }}>
-              <p style={{ fontSize: 13, fontWeight: 600 }}>Audio:</p>
-              <a href={result.audioUrl} target="_blank" rel="noreferrer">
-                {result.audioUrl}
-              </a>
-            </div>
-          )}
-
-          {result.photoUrls?.length > 0 && (
-            <div>
-              <p style={{ fontSize: 13, fontWeight: 600 }}>Photos:</p>
-
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {result.photoUrls.map((url) => (
-                  <a key={url} href={url} target="_blank" rel="noreferrer">
-                    <img
-                      src={url}
-                      alt="uploaded"
-                      style={{
-                        width: 90,
-                        height: 90,
-                        objectFit: "cover",
-                        borderRadius: 10,
-                      }}
-                    />
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
