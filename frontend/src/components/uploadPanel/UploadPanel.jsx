@@ -324,16 +324,21 @@ export default function UploadPanel() {
       const wavBlob = stopWavRecording(recorder);
       wavRecorderRef.current = null;
 
-      const previewUrl = URL.createObjectURL(wavBlob);
-
       updateEntry(entryId, {
         audioBlob: wavBlob,
-        audioPreviewUrl: previewUrl,
+        audioPreviewUrl: null,   // <-- lo settiamo dopo
         error: null,
       });
 
-      // ✅ transcribe (WAV stable)
+      // ✅ transcribe prima
       await transcribeBlob(entryId, wavBlob);
+
+      // ✅ preview dopo, in tick separato
+      setTimeout(() => {
+        const previewUrl = URL.createObjectURL(wavBlob);
+        updateEntry(entryId, { audioPreviewUrl: previewUrl });
+      }, 100);
+
 
     } catch (err) {
       console.error("stopRecording WAV error:", err);
