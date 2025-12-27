@@ -315,22 +315,48 @@ export default function UploadPanel() {
 
 
   const stopRecording = async (entryId) => {
-  try {
-    const recorder = wavRecorderRef.current;
-    if (!recorder) return;
+    try {
+      const recorder = wavRecorderRef.current;
+      if (!recorder) return;
 
-    updateEntry(entryId, { recording: false });
+      updateEntry(entryId, { recording: false });
 
-    const wavBlob = stopWavRecording(recorder);
-    wavRecorderRef.current = null;
+      // 1) STOP → WAV BLOB
+      const wavBlob = stopWavRecording(recorder);
+      wavRecorderRef.current = null;
 
-    alert("WAV CREATED: " + wavBlob.size + " bytes");
-  } catch (err) {
-    console.error("stopRecording TEST2 error:", err);
-    alert("STOP ERROR");
-  }
-};
+      // ✅ NON fare preview/transcribe nello stesso tick
+      setTimeout(() => {
+        try {
+          const previewUrl = URL.createObjectURL(wavBlob);
 
+          updateEntry(entryId, {
+            audioBlob: wavBlob,
+            audioPreviewUrl: previewUrl,
+            error: null,
+          });
+
+          // 2) transcribe in un altro tick ancora
+          setTimeout(() => {
+            transcribeBlob(entryId, wavBlob);
+          }, 500);
+
+        } catch (err) {
+          console.error("Preview/transcribe deferred crash:", err);
+          updateEntry(entryId, {
+            error: "Recording processed but Safari crashed while preparing upload.",
+          });
+        }
+      }, 250);
+
+    } catch (err) {
+      console.error("stopRecording WAV error:", err);
+      updateEntry(entryId, {
+        recording: false,
+        error: "Could not stop recording. Please retry.",
+      });
+    }
+  };
 
 
   // ---------- Photos handler ----------

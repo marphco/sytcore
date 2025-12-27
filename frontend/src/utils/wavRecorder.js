@@ -69,7 +69,7 @@ function encodeWAV(chunks, sampleRate) {
         offset += 2;
     }
 
-    return new Blob([view], { type: "audio/wav" });
+    return new Blob([wavBuffer], { type: "audio/wav" });
 }
 
 function flattenChunks(chunks) {
