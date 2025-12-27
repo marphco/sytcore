@@ -22,9 +22,12 @@ app.get("/", (req, res) => {
   res.send("SYTCORE API running ✅");
 });
 
-const PORT = process.env.PORT || 5050;
+const PORT = Number(process.env.PORT);
+
+if (!PORT) {
+  throw new Error("PORT missing in Railway environment");
+}
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Backend running on port ${PORT}`);
 });
-
