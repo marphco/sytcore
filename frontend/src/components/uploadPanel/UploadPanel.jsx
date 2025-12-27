@@ -80,6 +80,16 @@ function SortablePhoto({ photo, onRemove }) {
   );
 }
 
+const isIOS = () =>
+  typeof navigator !== "undefined" &&
+  /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+const isSafari = () =>
+  typeof navigator !== "undefined" &&
+  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+const useNativeRecorder = () => isIOS() && isSafari();
+
 
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
@@ -94,6 +104,8 @@ export default function UploadPanel() {
 
   // ✅ QUESTO VA QUI (TOP LEVEL)
   const fileInputRef = useRef({});
+  const audioInputRef = useRef({});
+
 
   // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
@@ -103,7 +115,8 @@ export default function UploadPanel() {
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
-    typeof MediaRecorder !== "undefined";
+    typeof MediaRecorder !== "undefined" &&
+    !useNativeRecorder();
 
   useEffect(() => {
     const onError = (msg, src, line, col, err) => {
@@ -238,7 +251,9 @@ export default function UploadPanel() {
       const formData = new FormData();
 
       // ✅ IMPORTANT: send blob directly (Safari safe)
-      formData.append("audio", audioBlob, "voice-note.wav");
+      const ext = audioBlob.type.includes("mp4") ? "m4a" : "webm";
+      formData.append("audio", audioBlob, `voice-note.${ext}`);
+
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -689,15 +704,58 @@ export default function UploadPanel() {
 
               <div className="controlsRow">
                 {!entry.recording ? (
+                  useNativeRecorder() ? (
+                    <>
+                      <button
+                        className="btn"
+                        onClick={() => audioInputRef.current[entry.id]?.click()}
+                        disabled={entry.transcribing}
+                        type="button"
+                      >
+                        🎙 Record
+                      </button>
+
+                      <input
+                        ref={(el) => (audioInputRef.current[entry.id] = el)}
+                        type="file"
+                        accept="audio/*"
+                        capture="microphone"
+                        hidden
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+
+                          const blob = file;
+                          const previewUrl = URL.createObjectURL(blob);
+
+                          updateEntry(entry.id, {
+                            audioBlob: blob,
+                            audioPreviewUrl: previewUrl,
+                            error: null,
+                          });
+
+                          await transcribeBlob(entry.id, blob);
+
+                          e.target.value = "";
+                        }}
+                      />
+                    </>
+                  ) : (
+                    <button
+                      className="btn"
+                      onClick={() => startRecording(entry.id)}
+                      disabled={!hasMediaRecorder || entry.transcribing}
+                      type="button"
+                    >
+                      🎙 Record
+                    </button>
+                  )
+                ) : (
                   <button
                     className="btn"
-                    onClick={() => startRecording(entry.id)}
-                    disabled={!hasMediaRecorder || entry.transcribing}
+                    onClick={() => stopRecording(entry.id)}
+                    type="button"
                   >
-                    🎙 Record
-                  </button>
-                ) : (
-                  <button className="btn" onClick={() => stopRecording(entry.id)}>
                     ⏹ Stop
                   </button>
                 )}
@@ -706,10 +764,12 @@ export default function UploadPanel() {
                   className="btnGhost"
                   onClick={() => resetEntry(entry.id)}
                   disabled={entry.transcribing}
+                  type="button"
                 >
                   🗑 Reset
                 </button>
               </div>
+
 
               {entry.audioPreviewUrl && (
                 <audio className="audio" controls src={entry.audioPreviewUrl} />
