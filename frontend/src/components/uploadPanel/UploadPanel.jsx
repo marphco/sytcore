@@ -718,7 +718,7 @@ export default function UploadPanel() {
                       <input
                         ref={(el) => (audioInputRef.current[entry.id] = el)}
                         type="file"
-                        accept="audio/*"
+                        accept="audio/mp4,audio/x-m4a,audio/m4a,audio/*"
                         hidden
                         onChange={async (e) => {
                           const file = e.target.files?.[0];
