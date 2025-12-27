@@ -321,13 +321,16 @@ export default function UploadPanel() {
 
     updateEntry(entryId, { recording: false });
 
-    // COMMENTA TUTTO QUI
+    const wavBlob = stopWavRecording(recorder);
     wavRecorderRef.current = null;
-    alert("STOP OK (no encode)");
+
+    alert("WAV CREATED: " + wavBlob.size + " bytes");
   } catch (err) {
-    console.error(err);
+    console.error("stopRecording TEST2 error:", err);
+    alert("STOP ERROR");
   }
 };
+
 
 
   // ---------- Photos handler ----------
