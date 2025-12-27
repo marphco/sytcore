@@ -3,7 +3,19 @@ import axios from "axios";
 import jsPDF from "jspdf";
 import "./UploadPanel.css";
 import { normalizeImage } from "../../utils/normalizeImage";
-import imageCompression from "browser-image-compression";
+import {
+  DndContext,
+  closestCenter,
+} from "@dnd-kit/core";
+
+import {
+  arrayMove,
+  SortableContext,
+  rectSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+
+import { CSS } from "@dnd-kit/utilities";
 
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -16,14 +28,7 @@ function createEntry() {
     audioBlob: null,
     audioPreviewUrl: null,
 
-    // ✅ foto originali selezionate
-    photoFiles: [],
-
-    // ✅ foto normalizzate (BLOB JPG pronti per PDF)
-    photoBlobs: [],
-
-    // ✅ preview urls per mostrare le foto in UI
-    photoPreviewUrls: [],
+    photos: [],
 
     transcript: null,
     text: "",
@@ -31,19 +36,50 @@ function createEntry() {
     uploading: false,
     transcribing: false,
     error: null,
+    recording: false,
   };
 }
 
 const LS_KEY = "sytcore_entries_v1";
 
-// convert file -> dataURL (base64)
-const fileToDataUrl = (file) =>
-  new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(file);
-  });
+function SortablePhoto({ photo, onRemove }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: photo.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    cursor: "grab",
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className="thumbWrap">
+      <img className="thumb" src={photo.url} alt="photo" />
+
+      <button
+        type="button"
+        className="thumbRemove"
+        onClick={() => onRemove(photo)}
+        aria-label="Remove photo"
+      >
+        ✕
+      </button>
+
+      {/* handle */}
+      <div className="dragHandle" {...attributes} {...listeners}>
+        ⠿
+      </div>
+    </div>
+  );
+}
+
 
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
@@ -56,6 +92,8 @@ export default function UploadPanel() {
     return d.toISOString().slice(0, 10);
   });
 
+  // ✅ QUESTO VA QUI (TOP LEVEL)
+  const fileInputRef = useRef({});
 
   // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
@@ -83,13 +121,14 @@ export default function UploadPanel() {
         id: e.id || crypto.randomUUID(),
         text: e.text || "",
         transcript: e.transcript || null,
+        photos: [],
       }));
-
 
       if (restored.length > 0) setEntries(restored);
     } catch (err) {
       console.error("localStorage load error:", err);
     }
+    // eslint-disable-next-line
   }, []);
 
   // ---------- Save to localStorage ----------
@@ -106,11 +145,10 @@ export default function UploadPanel() {
       };
 
       localStorage.setItem(LS_KEY, JSON.stringify(minimal));
-
     } catch (err) {
       console.error("localStorage save error:", err);
     }
-  }, [entries]);
+  }, [entries, projectName, reportDate]);
 
   // ---------- Update entry ----------
   const updateEntry = (id, patch) => {
@@ -118,11 +156,7 @@ export default function UploadPanel() {
       prev.map((e) => {
         if (e.id !== id) return e;
 
-        // patch può essere oggetto o funzione
-        const resolvedPatch =
-          typeof patch === "function" ? patch(e) : patch;
-
-        // supporta anche campo text: (prevText)=>...
+        const resolvedPatch = typeof patch === "function" ? patch(e) : patch;
         const finalPatch = { ...resolvedPatch };
 
         if (typeof resolvedPatch.text === "function") {
@@ -134,36 +168,10 @@ export default function UploadPanel() {
     );
   };
 
-
-  async function normalizeImages(files) {
-    const normalized = [];
-
-    for (const file of files) {
-      try {
-        const compressed = await imageCompression(file, {
-          maxSizeMB: 2,                  // puoi alzare o abbassare
-          maxWidthOrHeight: 2000,        // mantiene buona qualità
-          useWebWorker: true,
-          exifOrientation: true,         // ✅ QUESTO è il punto chiave
-        });
-
-        // manteniamo name e type coerenti
-        const fixedFile = new File([compressed], file.name, { type: compressed.type });
-        normalized.push(fixedFile);
-      } catch (err) {
-        console.error("normalizeImages error:", err);
-        normalized.push(file); // fallback
-      }
-    }
-
-    return normalized;
-  }
-
   // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB
   const transcribeBlob = async (entryId, audioBlob) => {
     updateEntry(entryId, {
       transcribing: true,
-      transcript: null,
       error: null,
     });
 
@@ -185,10 +193,8 @@ export default function UploadPanel() {
           prevText ? `${prevText}\n${tRes.data.transcript}` : tRes.data.transcript,
         transcribing: false,
       });
-
     } catch (err) {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
-
       updateEntry(entryId, {
         transcribing: false,
         error: err?.response?.data?.error || "Transcription failed.",
@@ -201,13 +207,8 @@ export default function UploadPanel() {
     setGlobalError(null);
     updateEntry(entryId, { error: null });
 
-    if (
-      mediaRecorderRef.current &&
-      mediaRecorderRef.current.state === "recording"
-    ) {
-      updateEntry(entryId, {
-        error: "Already recording another entry. Stop it first.",
-      });
+    if (mediaRecorderRef.current?.state === "recording") {
+      updateEntry(entryId, { error: "Already recording. Stop it first." });
       return;
     }
 
@@ -234,7 +235,6 @@ export default function UploadPanel() {
           audioBlob: blob,
           audioPreviewUrl: previewUrl,
           recording: false,
-          transcript: null,
           error: null,
         });
 
@@ -261,46 +261,70 @@ export default function UploadPanel() {
     updateEntry(entryId, { recording: false });
   };
 
+  // ---------- Photos handler ----------
+  const addPhotosToEntry = async (entryId, files) => {
+    if (!files || files.length === 0) return;
+
+    updateEntry(entryId, { uploading: true, error: null });
+
+    try {
+      const newPhotos = [];
+
+      for (const file of files) {
+        const normalizedBlob = await normalizeImage(file);
+        const url = URL.createObjectURL(normalizedBlob);
+
+        newPhotos.push({
+          id: crypto.randomUUID(),
+          file,
+          blob: normalizedBlob,
+          url,
+        });
+      }
+
+      updateEntry(entryId, (prev) => ({
+        photos: [...prev.photos, ...newPhotos],
+        uploading: false,
+      }));
+    } catch (err) {
+      console.error(err);
+      updateEntry(entryId, {
+        uploading: false,
+        error: "Failed to process photos.",
+      });
+    }
+  };
+
+
+  // ---------- Reset Entry ----------
   const resetEntry = (entryId) => {
     setEntries((prev) =>
       prev.map((e) => {
         if (e.id !== entryId) return e;
 
         if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
-        e.photoPreviewUrls?.forEach((u) => URL.revokeObjectURL(u));
+        e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
 
-        return {
-          ...createEntry(),
-          id: e.id,
-        };
+        return { ...createEntry(), id: e.id };
       })
     );
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-
-    mediaRecorderRef.current = null;
   };
 
-  const addEntry = () => {
-    setEntries((prev) => [...prev, createEntry()]);
-  };
+  const addEntry = () => setEntries((prev) => [...prev, createEntry()]);
 
   const clearReport = () => {
     if (!confirm("Clear all entries?")) return;
 
     entries.forEach((e) => {
       if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
-      e.photoPreviewUrls?.forEach((u) => URL.revokeObjectURL(u));
+      e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
     });
 
     localStorage.removeItem(LS_KEY);
     setEntries([createEntry()]);
   };
 
-  // ---------- PDF GENERATOR ----------
+  // ---------- PDF ----------
   const generatePDF = async () => {
     setGlobalError(null);
 
@@ -311,7 +335,6 @@ export default function UploadPanel() {
       const pageH = 297;
       const margin = 12;
       const contentW = pageW - margin * 2;
-
       let y = margin;
 
       // Header
@@ -322,10 +345,13 @@ export default function UploadPanel() {
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
-      doc.text(`Report date: ${reportDate}   •   Generated: ${new Date().toLocaleString()}`, margin, y);
+      doc.text(
+        `Report date: ${reportDate}   •   Generated: ${new Date().toLocaleString()}`,
+        margin,
+        y
+      );
       y += 12;
 
-      // Helper for page break
       const ensureSpace = (neededHeight) => {
         if (y + neededHeight > pageH - margin) {
           doc.addPage();
@@ -333,7 +359,22 @@ export default function UploadPanel() {
         }
       };
 
-      // Helper: render photo gallery (full width)
+      const blobToDataUrl = (blob) =>
+        new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result);
+          r.onerror = reject;
+          r.readAsDataURL(blob);
+        });
+
+      const getImageSize = (dataUrl) =>
+        new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve({ w: img.width, h: img.height });
+          img.onerror = reject;
+          img.src = dataUrl;
+        });
+
       const drawPhotoGallery = async (photos) => {
         if (!photos || photos.length === 0) {
           doc.setTextColor(130);
@@ -345,27 +386,10 @@ export default function UploadPanel() {
 
         const gap = 3;
         const cols = photos.length === 1 ? 1 : 2;
-
         const cellW = cols === 1 ? contentW : (contentW - gap) / 2;
         const cellH = cellW * 0.7;
 
         let col = 0;
-
-        const blobToDataUrl = (blob) =>
-          new Promise((resolve, reject) => {
-            const r = new FileReader();
-            r.onload = () => resolve(r.result);
-            r.onerror = reject;
-            r.readAsDataURL(blob);
-          });
-
-        const getImageSize = (dataUrl) =>
-          new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => resolve({ w: img.width, h: img.height });
-            img.onerror = reject;
-            img.src = dataUrl;
-          });
 
         for (let i = 0; i < photos.length; i++) {
           ensureSpace(cellH + 8);
@@ -375,7 +399,6 @@ export default function UploadPanel() {
           const dataUrl = await blobToDataUrl(photos[i]);
           const { w, h } = await getImageSize(dataUrl);
 
-          // ✅ contain scaling
           const scale = Math.min(cellW / w, cellH / h);
           const drawW = w * scale;
           const drawH = h * scale;
@@ -383,7 +406,6 @@ export default function UploadPanel() {
           const offsetX = x + (cellW - drawW) / 2;
           const offsetY = y + (cellH - drawH) / 2;
 
-          // optional background frame
           doc.setDrawColor(200);
           doc.setFillColor(245, 245, 245);
           doc.roundedRect(x, y, cellW, cellH, 2, 2, "FD");
@@ -391,7 +413,6 @@ export default function UploadPanel() {
           doc.addImage(dataUrl, "JPEG", offsetX, offsetY, drawW, drawH);
 
           col++;
-
           if (col >= cols) {
             col = 0;
             y += cellH + gap;
@@ -402,8 +423,6 @@ export default function UploadPanel() {
         y += 6;
       };
 
-
-      // Loop entries
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
 
@@ -411,14 +430,12 @@ export default function UploadPanel() {
         const lines = doc.splitTextToSize(text, contentW - 6);
         const textH = lines.length * 5;
 
-        // Entry title
         ensureSpace(12);
         doc.setFont("helvetica", "bold");
         doc.setFontSize(12);
         doc.text(`Entry #${i + 1}`, margin, y);
         y += 7;
 
-        // Text box
         ensureSpace(textH + 14);
         doc.setDrawColor(40);
         doc.setFillColor(245, 245, 245);
@@ -430,17 +447,14 @@ export default function UploadPanel() {
 
         y += textH + 14;
 
-        // Photos label
         ensureSpace(10);
         doc.setFont("helvetica", "bold");
         doc.setFontSize(11);
         doc.text("Photos", margin, y);
         y += 6;
 
-        // Photos gallery
-        await drawPhotoGallery(entry.photoBlobs);
+        await drawPhotoGallery(entry.photos.map((p) => p.blob));
 
-        // Divider
         ensureSpace(8);
         doc.setDrawColor(70);
         doc.line(margin, y, margin + contentW, y);
@@ -453,7 +467,6 @@ export default function UploadPanel() {
       setGlobalError("PDF generation failed. Check console.");
     }
   };
-
 
   return (
     <div className="wrapper">
@@ -555,93 +568,93 @@ export default function UploadPanel() {
             <div className="rightCol">
               <p className="sectionTitle">Photos</p>
 
-              <input
-                className="fileInput"
-                type="file"
-                accept="image/*"
-                multiple
-                disabled={entry.transcribing}
-                onChange={async (e) => {
-                  const files = Array.from(e.target.files || []);
-
-                  if (files.length === 0) return;
-
-                  // metti un piccolo loading visivo
-                  updateEntry(entry.id, { uploading: true, error: null });
-
-                  try {
-                    // normalizza tutte le immagini
-                    const normalizedBlobs = [];
-                    const previewUrls = [];
-
-                    for (const file of files) {
-                      const normalizedBlob = await normalizeImage(file);
-                      normalizedBlobs.push(normalizedBlob);
-                      previewUrls.push(URL.createObjectURL(normalizedBlob));
-
-                    }
-
-                    // revoca vecchie preview per evitare memory leak
-                    entry.photoPreviewUrls?.forEach((url) => URL.revokeObjectURL(url));
-
-                    updateEntry(entry.id, {
-                      photoFiles: files,          // opzionale (puoi anche non salvarle)
-                      photoBlobs: normalizedBlobs,
-                      photoPreviewUrls: previewUrls,
-                      uploading: false,
-                    });
-                  } catch (err) {
-                    console.error(err);
-                    updateEntry(entry.id, {
-                      uploading: false,
-                      error: "Failed to process photos.",
-                    });
-                  }
+              <div
+                className="dropzone"
+                onClick={() => fileInputRef.current[entry.id]?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.classList.add("dropzoneActive");
                 }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.classList.remove("dropzoneActive");
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.classList.remove("dropzoneActive");
 
-              />
+                  const files = Array.from(e.dataTransfer.files || []).filter((f) =>
+                    f.type.startsWith("image/")
+                  );
+                  await addPhotosToEntry(entry.id, files);
+                }}
+              >
+                <input
+                  ref={(el) => (fileInputRef.current[entry.id] = el)}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    await addPhotosToEntry(entry.id, files);
+                    e.target.value = "";
+                  }}
+                />
 
-              {entry.photoFiles.length > 0 && (
+                <p className="dropzoneText">
+                  Drag & drop photos here <span>or click to select</span>
+                </p>
+              </div>
+
+              {entry.photos?.length > 0 && (
                 <p className="mutedSmall">
-                  ✅ {entry.photoFiles.length} photo(s) selected
+                  ✅ {entry.photos.length} photo(s) selected
                 </p>
               )}
 
-              {entry.photoPreviewUrls?.length > 0 && (
-                <div className="grid">
-                  {entry.photoPreviewUrls.map((url, i) => (
-                    <div key={url} style={{ position: "relative" }}>
-                      <img className="thumb" src={url} alt="photo" />
 
-                      <button
-                        onClick={() => {
-                          // revoke preview
-                          URL.revokeObjectURL(url);
+              {entry.photos?.length > 0 && (
+                <DndContext
+                  collisionDetection={closestCenter}
+                  onDragEnd={(event) => {
+                    const { active, over } = event;
+                    if (!over || active.id === over.id) return;
 
-                          updateEntry(entry.id, {
-                            photoBlobs: entry.photoBlobs.filter((_, idx) => idx !== i),
-                            photoPreviewUrls: entry.photoPreviewUrls.filter((_, idx) => idx !== i),
-                          });
-                        }}
-                        style={{
-                          position: "absolute",
-                          top: 6,
-                          right: 6,
-                          width: 26,
-                          height: 26,
-                          borderRadius: 999,
-                          border: "none",
-                          cursor: "pointer",
-                          background: "rgba(0,0,0,0.7)",
-                          color: "white",
-                          fontWeight: 900,
-                        }}
-                      >
-                        ✕
-                      </button>
+                    updateEntry(entry.id, (prev) => {
+                      const oldIndex = prev.photos.findIndex((p) => p.id === active.id);
+                      const newIndex = prev.photos.findIndex((p) => p.id === over.id);
+
+                      return {
+                        photos: arrayMove(prev.photos, oldIndex, newIndex),
+                      };
+                    });
+                  }}
+                >
+                  <SortableContext
+                    items={entry.photos.map((p) => p.id)}
+                    strategy={rectSortingStrategy}
+                  >
+                    <div className="grid">
+                      {entry.photos.map((photo) => (
+                        <SortablePhoto
+                          key={photo.id}
+                          photo={photo}
+                          onRemove={(p) => {
+                            URL.revokeObjectURL(p.url);
+
+                            updateEntry(entry.id, (prev) => ({
+                              photos: prev.photos.filter((x) => x.id !== p.id),
+                            }));
+                          }}
+                        />
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </SortableContext>
+                </DndContext>
               )}
 
             </div>
