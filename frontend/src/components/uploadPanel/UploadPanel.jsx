@@ -8,26 +8,22 @@ const API_URL = import.meta.env.VITE_API_URL;
 function createEntry() {
   return {
     id: crypto.randomUUID(),
-
-    // audio
     audioBlob: null,
     audioPreviewUrl: null,
     audioRemoteUrl: null,
 
-    // photos
     photoFiles: [],
     photoRemoteUrls: [],
 
-    // transcript
     transcript: null,
+    text: "", // ✅ testo finale editabile
 
-    // states
-    recording: false,
     uploading: false,
     transcribing: false,
     error: null,
   };
 }
+
 
 // localStorage key
 const LS_KEY = "sytcore_entries_v1";
@@ -76,6 +72,7 @@ export default function UploadPanel() {
         audioRemoteUrl: e.audioRemoteUrl,
         photoRemoteUrls: e.photoRemoteUrls,
         transcript: e.transcript,
+        text: e.text,
       }));
       localStorage.setItem(LS_KEY, JSON.stringify(minimal));
     } catch (err) {
@@ -92,28 +89,42 @@ export default function UploadPanel() {
 
   // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB (NO UPLOAD NEEDED)
   const transcribeBlob = async (entryId, audioBlob) => {
-    updateEntry(entryId, { transcribing: true, transcript: null, error: null });
+    updateEntry(entryId, {
+      transcribing: true,
+      transcript: null,
+      error: null,
+    });
 
     try {
       const formData = new FormData();
-      formData.append("audio", audioBlob, "voice-note.webm");
+
+      // ✅ Convert blob -> File (important for OpenAI)
+      const file = new File([audioBlob], "voice-note.webm", {
+        type: audioBlob.type || "audio/webm",
+      });
+
+      formData.append("audio", file);
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
       updateEntry(entryId, {
-        transcript: tRes.data.transcript || "",
+        transcript: tRes.data.transcript,
+        text: tRes.data.transcript,
         transcribing: false,
       });
+
     } catch (err) {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
+
       updateEntry(entryId, {
         transcribing: false,
         error: err?.response?.data?.error || "Transcription failed.",
       });
     }
   };
+
 
   // ---------- Recording ----------
   const startRecording = async (entryId) => {
@@ -323,17 +334,39 @@ export default function UploadPanel() {
                 <audio className="audio" controls src={entry.audioPreviewUrl} />
               )}
 
-              <p className="sectionTitle">Transcript</p>
+              {/* DESCRIPTION (editable) */}
+              <div style={{ marginTop: 18 }}>
+                <p style={{ fontWeight: 700, marginBottom: 8, letterSpacing: 1, opacity: 0.85 }}>
+                  DESCRIPTION
+                </p>
 
-              <div className="transcriptBox">
-                {entry.transcribing ? (
-                  <span className="muted">Transcribing...</span>
-                ) : entry.transcript ? (
-                  entry.transcript
-                ) : (
-                  <span className="muted">No transcript yet.</span>
+                {entry.transcribing && (
+                  <p style={{ fontSize: 13, opacity: 0.75, marginBottom: 8 }}>
+                    Transcribing...
+                  </p>
                 )}
+
+                <textarea
+                  value={entry.text || ""}
+                  onChange={(e) => updateEntry(entry.id, { text: e.target.value })}
+                  placeholder="Your description will appear here after transcription… but you can edit it."
+                  style={{
+                    width: "100%",
+                    minHeight: 110,
+                    resize: "vertical",
+                    borderRadius: 12,
+                    padding: 14,
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: "rgba(255,255,255,0.04)",
+                    color: "#fff",
+                    fontSize: 13.5,
+                    lineHeight: 1.5,
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
               </div>
+
             </div>
 
             {/* RIGHT */}
