@@ -48,6 +48,56 @@ function safeErrorMessage(err) {
   }
 }
 
+// ✅ slugify for file naming (project/site)
+function slugify(str) {
+  return (str || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, "") // remove special chars
+    .replace(/\s+/g, "-") // spaces -> dashes
+    .replace(/-+/g, "-"); // collapse dashes
+}
+
+// ✅ Compress image before adding to PDF (keeps aspect ratio)
+async function compressImageToDataUrl(fileOrBlob, targetMaxWidth = 1400, quality = 0.72) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(fileOrBlob);
+  });
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const ratio = img.width / img.height;
+
+      let newW = img.width;
+      let newH = img.height;
+
+      if (img.width > targetMaxWidth) {
+        newW = targetMaxWidth;
+        newH = Math.round(targetMaxWidth / ratio);
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = newW;
+      canvas.height = newH;
+
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, newW, newH);
+
+      // ✅ always output JPEG for best compression
+      const compressed = canvas.toDataURL("image/jpeg", quality);
+
+      resolve(compressed);
+    };
+
+    img.src = dataUrl;
+  });
+}
+
+
 // ---------- Sortable Photo ----------
 function SortablePhoto({ photo, onRemove }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -392,7 +442,7 @@ export default function UploadPanel() {
 
   const addEntry = () => setEntries((prev) => [...prev, createEntry()]);
 
-  // ✅ Clear Report
+  // ✅ Clear Report (FIXED, always defined)
   const clearReport = () => {
     if (!confirm("Clear all entries?")) return;
 
@@ -404,11 +454,24 @@ export default function UploadPanel() {
     localStorage.removeItem(LS_KEY);
     setEntries([createEntry()]);
     setLogoDataUrl(null);
+    setGlobalError(null);
   };
 
   // ---------- PDF ----------
   const generatePDF = async () => {
     setGlobalError(null);
+
+    // ✅ Prevent empty report
+    const hasContent = entries.some(
+      (e) =>
+        (e.text && e.text.trim() !== "") ||
+        (e.photos && e.photos.length > 0)
+    );
+
+    if (!hasContent) {
+      setGlobalError("Nothing to export. Add at least one entry before generating the PDF.");
+      return;
+    }
 
     try {
       const doc = new jsPDF("p", "mm", "a4");
@@ -448,15 +511,11 @@ export default function UploadPanel() {
         const offsetX = x + (boxW - drawW) / 2;
         const offsetY = yPos + (boxH - drawH) / 2;
 
-        doc.addImage(
-          dataUrl,
-          dataUrl.includes("png") ? "PNG" : "JPEG",
-          offsetX,
-          offsetY,
-          drawW,
-          drawH
-        );
+        const format = dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+
+        doc.addImage(dataUrl, format, offsetX, offsetY, drawW, drawH);
       };
+
 
       const drawHeader = (isFirstPage) => {
         const headerTop = isFirstPage ? 12 : 8;
@@ -499,7 +558,6 @@ export default function UploadPanel() {
         // ✅ spacing after header
         y = isFirstPage ? headerTop + logoBox + 14 : headerTop + logoBox + 10;
       };
-
 
       // First page header
       drawHeader(true);
@@ -585,12 +643,8 @@ export default function UploadPanel() {
             doc.setDrawColor(220);
             doc.roundedRect(x, imgY, imgW, imgH, 3, 3);
 
-            const dataUrl = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result);
-              reader.onerror = reject;
-              reader.readAsDataURL(photo.blob || photo.file);
-            });
+            const dataUrl = await compressImageToDataUrl(photo.blob || photo.file, 1400, 0.72);
+
 
             drawImageContain(dataUrl, x + 1, imgY + 1, imgW - 2, imgH - 2);
           }
@@ -623,7 +677,11 @@ export default function UploadPanel() {
         doc.setTextColor(0);
       }
 
-      doc.save(`sytcore-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+      // ✅ file name: DATE first (sortable) + project
+      const safeProject = slugify(projectName || "site");
+      const fileName = `${reportDate}__${safeProject}__daily-report.pdf`;
+
+      doc.save(fileName);
     } catch (err) {
       console.error(err);
       setGlobalError("PDF generation failed.");
