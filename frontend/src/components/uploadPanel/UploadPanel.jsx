@@ -242,8 +242,9 @@ export default function UploadPanel() {
       const formData = new FormData();
 
       // ✅ IMPORTANT: send blob directly (Safari safe)
-      const ext = "wav";
+      const ext = audioBlob.type.includes("mp4") ? "m4a" : "webm";
       formData.append("audio", audioBlob, `voice-note.${ext}`);
+
 
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
@@ -287,25 +288,84 @@ export default function UploadPanel() {
     }
   };
 
+
+  // ---------- Recording ----------
   const getSupportedMimeType = () => {
     const types = [
       "audio/mp4",
       "audio/aac",
+      "audio/webm;codecs=opus",
+      "audio/webm",
     ];
     return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
   };
 
-
-  // ---------- Recording ----------
   const startRecording = async (entryId) => {
-    setGlobalError(null);
     updateEntry(entryId, { error: null });
+    setGlobalError(null);
 
     try {
-      wavRecorderRef.current = await startWavRecording();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      const mimeType = getSupportedMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      mediaRecorderRef.current = recorder;
+      streamRef.current = stream;
+      chunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const safeChunks = [...chunksRef.current];
+
+        // 🔥 Safari fix: delay blob creation
+        setTimeout(async () => {
+          try {
+            const blob = new Blob(safeChunks, { type: recorder.mimeType });
+
+            if (!blob || blob.size === 0) {
+              updateEntry(entryId, {
+                recording: false,
+                error: "Empty recording. Try again.",
+              });
+              return;
+            }
+
+            const previewUrl = URL.createObjectURL(blob);
+
+            updateEntry(entryId, {
+              audioBlob: blob,
+              audioPreviewUrl: previewUrl,
+              recording: false,
+              error: null,
+            });
+
+            // ✅ stop stream safely
+            stream.getTracks().forEach((t) => t.stop());
+
+            // ✅ transcription delayed (avoid crash)
+            setTimeout(() => {
+              transcribeBlob(entryId, blob);
+            }, 200);
+          } catch (err) {
+            console.error("STOP ERROR:", err);
+            updateEntry(entryId, {
+              recording: false,
+              error: "Recording processing failed.",
+            });
+          }
+        }, 80);
+      };
+
+      recorder.start(250);
       updateEntry(entryId, { recording: true });
     } catch (err) {
-      console.error("startRecording WAV error:", err);
+      console.error("startRecording error:", err);
       updateEntry(entryId, {
         recording: false,
         error: "Microphone permission denied or recording failed.",
@@ -313,47 +373,20 @@ export default function UploadPanel() {
     }
   };
 
-
-  const stopRecording = async (entryId) => {
+  const stopRecording = (entryId) => {
     try {
-      const recorder = wavRecorderRef.current;
+      const recorder = mediaRecorderRef.current;
       if (!recorder) return;
 
+      if (recorder.state === "inactive") return;
+      recorder.stop();
+
       updateEntry(entryId, { recording: false });
-
-      // 1) STOP → WAV BLOB
-      const wavBlob = stopWavRecording(recorder);
-      wavRecorderRef.current = null;
-
-      // ✅ NON fare preview/transcribe nello stesso tick
-      setTimeout(() => {
-        try {
-          const previewUrl = URL.createObjectURL(wavBlob);
-
-          updateEntry(entryId, {
-            audioBlob: wavBlob,
-            audioPreviewUrl: previewUrl,
-            error: null,
-          });
-
-          // 2) transcribe in un altro tick ancora
-          setTimeout(() => {
-            transcribeBlob(entryId, wavBlob);
-          }, 500);
-
-        } catch (err) {
-          console.error("Preview/transcribe deferred crash:", err);
-          updateEntry(entryId, {
-            error: "Recording processed but Safari crashed while preparing upload.",
-          });
-        }
-      }, 250);
-
     } catch (err) {
-      console.error("stopRecording WAV error:", err);
+      console.error("stopRecording error:", err);
       updateEntry(entryId, {
         recording: false,
-        error: "Could not stop recording. Please retry.",
+        error: "Could not stop recording.",
       });
     }
   };
