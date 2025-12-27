@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import uploadRoutes from "./routes/uploadRoutes.js";
+import transcribeRoutes from "./routes/transcribeRoutes.js";
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ app.use("/uploads", express.static("uploads"));
 
 // routes
 app.use("/api", uploadRoutes);
+app.use("/api", transcribeRoutes);
 
 app.get("/", (req, res) => {
   res.send("SYTCORE API running ✅");
@@ -22,6 +24,7 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 5050;
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Backend running on port ${PORT}`);
 });
+

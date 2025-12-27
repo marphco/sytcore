@@ -1,86 +1,71 @@
-import { useState, useRef } from "react";
+import { useRef, useState } from "react";
 import axios from "axios";
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:5050`;
 
 export default function UploadPanel() {
-  const [audioFile, setAudioFile] = useState(null);
+  // -------- Detect iOS (Safari / PWA) --------
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+  // -------- Photos --------
   const [photoFiles, setPhotoFiles] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
+
+  // -------- iOS fallback audio file (native recorder creates a file) --------
+  const [audioFileFallback, setAudioFileFallback] = useState(null);
+
+  // -------- Desktop MediaRecorder audio --------
   const [recording, setRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
-  const [audioUrl, setAudioUrl] = useState(null);
+  const [audioPreviewUrl, setAudioPreviewUrl] = useState(null);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
+  // -------- UI state --------
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
 
-  const handleUpload = async () => {
-    if (!audioFile && photoFiles.length === 0) {
-      setError("Carica almeno un audio o una foto.");
-      return;
-    }
+  const hasMediaRecorder =
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== "undefined";
 
-    setLoading(true);
-    setError(null);
-    setResult(null);
-
-    try {
-      const formData = new FormData();
-      if (audioBlob) {
-        const audioFile = new File([audioBlob], "voice-note.webm", {
-          type: audioBlob.type,
-        });
-        formData.append("audio", audioFile);
-      }
-
-      photoFiles.forEach((p) => formData.append("photos", p));
-
-      const res = await axios.post(`${API_URL}/api/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      setResult(res.data);
-    } catch (err) {
-      console.error(err);
-      setError("Upload fallito. Controlla console/log.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // ---------- Desktop Recording ----------
   const startRecording = async () => {
     setError(null);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
       chunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (e) => {
+      recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: mediaRecorder.mimeType });
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
 
         setAudioBlob(blob);
 
         const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
+        setAudioPreviewUrl(url);
 
-        // stop all tracks (important on iPhone)
+        // stop mic tracks
         stream.getTracks().forEach((t) => t.stop());
       };
 
-      mediaRecorder.start();
+      recorder.start();
       setRecording(true);
     } catch (err) {
       console.error(err);
-      setError("Permesso microfono negato o errore recording.");
+      setError("Microphone permission denied or recording error.");
     }
   };
 
@@ -90,6 +75,57 @@ export default function UploadPanel() {
     setRecording(false);
   };
 
+  const resetAudio = () => {
+    setAudioBlob(null);
+    setAudioPreviewUrl(null);
+    setAudioFileFallback(null);
+    setRecording(false);
+  };
+
+  // ---------- Upload ----------
+  const handleUpload = async () => {
+    const hasAudio = !!audioBlob || !!audioFileFallback;
+    const hasPhotos = photoFiles.length > 0;
+
+    if (!hasAudio && !hasPhotos) {
+      setError("Please add at least one voice note or photo.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const formData = new FormData();
+
+      // Prefer desktop recorded audio
+      if (audioBlob) {
+        const audioFile = new File([audioBlob], "voice-note.webm", {
+          type: audioBlob.type || "audio/webm",
+        });
+        formData.append("audio", audioFile);
+      }
+      // Else iOS native recorded file
+      else if (audioFileFallback) {
+        formData.append("audio", audioFileFallback);
+      }
+
+      // Photos
+      photoFiles.forEach((p) => formData.append("photos", p));
+
+      const res = await axios.post(`${API_URL}/api/upload`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      setResult(res.data);
+    } catch (err) {
+      console.error(err);
+      setError("Upload failed. Check console/logs.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div style={{ maxWidth: 420, margin: "0 auto", padding: 16 }}>
@@ -97,81 +133,148 @@ export default function UploadPanel() {
         SYTCORE Upload
       </h2>
 
+      {/* VOICE NOTE */}
       <div style={{ marginBottom: 16 }}>
         <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-          Voice Note (opzionale)
+          Voice Note (optional)
         </label>
 
-        <div style={{ display: "flex", gap: 10 }}>
-          {!recording ? (
-            <button
-              onClick={startRecording}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: "none",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              🎙️ Record
-            </button>
-          ) : (
-            <button
-              onClick={stopRecording}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: "none",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              ⏹ Stop
-            </button>
-          )}
+        {/* iOS: use native recorder via input capture (works on HTTP LAN) */}
+        {isIOS ? (
+          <>
+            <input
+              id="voiceNoteInput"
+              type="file"
+              accept="audio/mp4,audio/m4a,audio/*"
+              style={{ display: "none" }}
+              onChange={(e) => setAudioFileFallback(e.target.files?.[0] || null)}
+            />
 
-          {audioBlob && (
+
             <button
-              onClick={() => {
-                setAudioBlob(null);
-                setAudioUrl(null);
-              }}
+              type="button"
+              onClick={() => document.getElementById("voiceNoteInput").click()}
               style={{
                 padding: "10px 14px",
                 borderRadius: 10,
                 border: "none",
                 fontWeight: 700,
                 cursor: "pointer",
+                width: "100%",
+                marginBottom: 8,
               }}
             >
-              🗑 Reset
+              🎙 Record Voice Note
             </button>
-          )}
-        </div>
 
-        {audioUrl && (
-          <div style={{ marginTop: 10 }}>
-            <audio controls src={audioUrl} style={{ width: "100%" }} />
-          </div>
+            {audioFileFallback && (
+              <div style={{ fontSize: 12 }}>
+                ✅ {audioFileFallback.name}
+                <button
+                  type="button"
+                  onClick={() => setAudioFileFallback(null)}
+                  style={{
+                    marginLeft: 10,
+                    fontSize: 12,
+                    border: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Desktop: MediaRecorder */}
+            {hasMediaRecorder ? (
+              <>
+                <button
+                  type="button"
+                  onClick={recording ? stopRecording : startRecording}
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 10,
+                    border: "none",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    width: "100%",
+                    marginBottom: 8,
+                  }}
+                >
+                  {recording ? "⏹ Stop Recording" : "🎙 Start Recording"}
+                </button>
+
+                {audioPreviewUrl && (
+                  <div style={{ marginTop: 10 }}>
+                    <audio
+                      controls
+                      src={audioPreviewUrl}
+                      style={{ width: "100%" }}
+                    />
+                    <button
+                      type="button"
+                      onClick={resetAudio}
+                      style={{
+                        marginTop: 10,
+                        width: "100%",
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: "none",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      🗑 Remove Voice Note
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Desktop fallback if MediaRecorder unsupported */}
+                <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+                  Recording is not supported on this browser. Upload an audio
+                  file instead.
+                </p>
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={(e) =>
+                    setAudioFileFallback(e.target.files?.[0] || null)
+                  }
+                />
+                {audioFileFallback && (
+                  <p style={{ fontSize: 12, marginTop: 6 }}>
+                    ✅ {audioFileFallback.name}
+                  </p>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
-
 
       {/* PHOTOS */}
       <div style={{ marginBottom: 16 }}>
         <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-          Foto (1+)
+          Photos (1+)
         </label>
+
         <input
           type="file"
           accept="image/*"
+          capture="environment"
           multiple
           onChange={(e) => setPhotoFiles(Array.from(e.target.files || []))}
         />
+
         {photoFiles.length > 0 && (
           <p style={{ fontSize: 12, marginTop: 6 }}>
-            ✅ {photoFiles.length} foto selezionate
+            ✅ {photoFiles.length} photos selected
           </p>
         )}
       </div>
@@ -201,7 +304,7 @@ export default function UploadPanel() {
       {result && (
         <div style={{ marginTop: 18 }}>
           <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
-            Risultato
+            Result
           </h3>
 
           {result.audioUrl && (
@@ -215,7 +318,7 @@ export default function UploadPanel() {
 
           {result.photoUrls?.length > 0 && (
             <div>
-              <p style={{ fontSize: 13, fontWeight: 600 }}>Foto:</p>
+              <p style={{ fontSize: 13, fontWeight: 600 }}>Photos:</p>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {result.photoUrls.map((url) => (
