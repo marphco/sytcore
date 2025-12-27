@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import jsPDF from "jspdf";
 import "./UploadPanel.css";
+import { normalizeImage } from "../../utils/normalizeImage";
+import imageCompression from "browser-image-compression";
+
 
 const API_URL = import.meta.env.VITE_API_URL;
 
@@ -9,16 +12,23 @@ const API_URL = import.meta.env.VITE_API_URL;
 function createEntry() {
   return {
     id: crypto.randomUUID(),
+
     audioBlob: null,
     audioPreviewUrl: null,
 
+    // ✅ foto originali selezionate
     photoFiles: [],
+
+    // ✅ foto normalizzate (BLOB JPG pronti per PDF)
+    photoBlobs: [],
+
+    // ✅ preview urls per mostrare le foto in UI
     photoPreviewUrls: [],
 
     transcript: null,
     text: "",
 
-    recording: false,
+    uploading: false,
     transcribing: false,
     error: null,
   };
@@ -39,6 +49,14 @@ export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
   const [globalError, setGlobalError] = useState(null);
 
+  const [projectName, setProjectName] = useState("");
+  const [reportDate, setReportDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  });
+
+
   // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
@@ -57,12 +75,16 @@ export default function UploadPanel() {
 
       const saved = JSON.parse(raw);
 
-      const restored = saved.map((e) => ({
+      setProjectName(saved.projectName || "");
+      setReportDate(saved.reportDate || new Date().toISOString().slice(0, 10));
+
+      const restored = (saved.entries || []).map((e) => ({
         ...createEntry(),
         id: e.id || crypto.randomUUID(),
         text: e.text || "",
         transcript: e.transcript || null,
       }));
+
 
       if (restored.length > 0) setEntries(restored);
     } catch (err) {
@@ -73,12 +95,18 @@ export default function UploadPanel() {
   // ---------- Save to localStorage ----------
   useEffect(() => {
     try {
-      const minimal = entries.map((e) => ({
-        id: e.id,
-        transcript: e.transcript,
-        text: e.text,
-      }));
+      const minimal = {
+        projectName,
+        reportDate,
+        entries: entries.map((e) => ({
+          id: e.id,
+          transcript: e.transcript,
+          text: e.text,
+        })),
+      };
+
       localStorage.setItem(LS_KEY, JSON.stringify(minimal));
+
     } catch (err) {
       console.error("localStorage save error:", err);
     }
@@ -87,9 +115,49 @@ export default function UploadPanel() {
   // ---------- Update entry ----------
   const updateEntry = (id, patch) => {
     setEntries((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, ...patch } : e))
+      prev.map((e) => {
+        if (e.id !== id) return e;
+
+        // patch può essere oggetto o funzione
+        const resolvedPatch =
+          typeof patch === "function" ? patch(e) : patch;
+
+        // supporta anche campo text: (prevText)=>...
+        const finalPatch = { ...resolvedPatch };
+
+        if (typeof resolvedPatch.text === "function") {
+          finalPatch.text = resolvedPatch.text(e.text || "");
+        }
+
+        return { ...e, ...finalPatch };
+      })
     );
   };
+
+
+  async function normalizeImages(files) {
+    const normalized = [];
+
+    for (const file of files) {
+      try {
+        const compressed = await imageCompression(file, {
+          maxSizeMB: 2,                  // puoi alzare o abbassare
+          maxWidthOrHeight: 2000,        // mantiene buona qualità
+          useWebWorker: true,
+          exifOrientation: true,         // ✅ QUESTO è il punto chiave
+        });
+
+        // manteniamo name e type coerenti
+        const fixedFile = new File([compressed], file.name, { type: compressed.type });
+        normalized.push(fixedFile);
+      } catch (err) {
+        console.error("normalizeImages error:", err);
+        normalized.push(file); // fallback
+      }
+    }
+
+    return normalized;
+  }
 
   // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB
   const transcribeBlob = async (entryId, audioBlob) => {
@@ -113,9 +181,11 @@ export default function UploadPanel() {
 
       updateEntry(entryId, {
         transcript: tRes.data.transcript,
-        text: tRes.data.transcript,
+        text: (prevText) =>
+          prevText ? `${prevText}\n${tRes.data.transcript}` : tRes.data.transcript,
         transcribing: false,
       });
+
     } catch (err) {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
 
@@ -247,12 +317,12 @@ export default function UploadPanel() {
       // Header
       doc.setFont("helvetica", "bold");
       doc.setFontSize(18);
-      doc.text("SYTCORE Daily Report", margin, y);
+      doc.text(`${projectName || "SYTCORE"} Daily Report`, margin, y);
       y += 10;
 
       doc.setFont("helvetica", "normal");
       doc.setFontSize(11);
-      doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
+      doc.text(`Report date: ${reportDate}   •   Generated: ${new Date().toLocaleString()}`, margin, y);
       y += 12;
 
       // Helper for page break
@@ -274,39 +344,64 @@ export default function UploadPanel() {
         }
 
         const gap = 3;
-        let cols = photos.length === 1 ? 1 : 2;
+        const cols = photos.length === 1 ? 1 : 2;
 
-        const cellW =
-          cols === 1 ? contentW : (contentW - gap) / 2;
-
-        const cellH = cellW * 0.7; // aspect ratio nice
+        const cellW = cols === 1 ? contentW : (contentW - gap) / 2;
+        const cellH = cellW * 0.7;
 
         let col = 0;
 
+        const blobToDataUrl = (blob) =>
+          new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = reject;
+            r.readAsDataURL(blob);
+          });
+
+        const getImageSize = (dataUrl) =>
+          new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve({ w: img.width, h: img.height });
+            img.onerror = reject;
+            img.src = dataUrl;
+          });
+
         for (let i = 0; i < photos.length; i++) {
-          ensureSpace(cellH + 6);
+          ensureSpace(cellH + 8);
 
           const x = margin + col * (cellW + gap);
 
-          const dataUrl = await fileToDataUrl(photos[i]);
-          doc.addImage(dataUrl, "JPEG", x, y, cellW, cellH);
+          const dataUrl = await blobToDataUrl(photos[i]);
+          const { w, h } = await getImageSize(dataUrl);
+
+          // ✅ contain scaling
+          const scale = Math.min(cellW / w, cellH / h);
+          const drawW = w * scale;
+          const drawH = h * scale;
+
+          const offsetX = x + (cellW - drawW) / 2;
+          const offsetY = y + (cellH - drawH) / 2;
+
+          // optional background frame
+          doc.setDrawColor(200);
+          doc.setFillColor(245, 245, 245);
+          doc.roundedRect(x, y, cellW, cellH, 2, 2, "FD");
+
+          doc.addImage(dataUrl, "JPEG", offsetX, offsetY, drawW, drawH);
 
           col++;
 
-          // next row
           if (col >= cols) {
             col = 0;
             y += cellH + gap;
           }
         }
 
-        // if last row had only 1 image in 2-col layout
-        if (col !== 0) {
-          y += cellH + gap;
-        }
-
-        y += 4;
+        if (col !== 0) y += cellH + gap;
+        y += 6;
       };
+
 
       // Loop entries
       for (let i = 0; i < entries.length; i++) {
@@ -343,7 +438,7 @@ export default function UploadPanel() {
         y += 6;
 
         // Photos gallery
-        await drawPhotoGallery(entry.photoFiles);
+        await drawPhotoGallery(entry.photoBlobs);
 
         // Divider
         ensureSpace(8);
@@ -363,6 +458,28 @@ export default function UploadPanel() {
   return (
     <div className="wrapper">
       <div className="topBar">
+        <div className="metaRow">
+          <div className="metaField">
+            <label>Project</label>
+            <input
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="Project name..."
+              className="metaInput"
+            />
+          </div>
+
+          <div className="metaField">
+            <label>Report date</label>
+            <input
+              type="date"
+              value={reportDate}
+              onChange={(e) => setReportDate(e.target.value)}
+              className="metaInput"
+            />
+          </div>
+        </div>
+
         <h2 className="title">SYTCORE Daily Report</h2>
 
         <div className="topActions">
@@ -444,18 +561,44 @@ export default function UploadPanel() {
                 accept="image/*"
                 multiple
                 disabled={entry.transcribing}
-                onChange={(e) => {
+                onChange={async (e) => {
                   const files = Array.from(e.target.files || []);
-                  const previewUrls = files.map((f) => URL.createObjectURL(f));
 
-                  // cleanup old previews
-                  entry.photoPreviewUrls?.forEach((u) => URL.revokeObjectURL(u));
+                  if (files.length === 0) return;
 
-                  updateEntry(entry.id, {
-                    photoFiles: files,
-                    photoPreviewUrls: previewUrls,
-                  });
+                  // metti un piccolo loading visivo
+                  updateEntry(entry.id, { uploading: true, error: null });
+
+                  try {
+                    // normalizza tutte le immagini
+                    const normalizedBlobs = [];
+                    const previewUrls = [];
+
+                    for (const file of files) {
+                      const normalizedBlob = await normalizeImage(file);
+                      normalizedBlobs.push(normalizedBlob);
+                      previewUrls.push(URL.createObjectURL(normalizedBlob));
+
+                    }
+
+                    // revoca vecchie preview per evitare memory leak
+                    entry.photoPreviewUrls?.forEach((url) => URL.revokeObjectURL(url));
+
+                    updateEntry(entry.id, {
+                      photoFiles: files,          // opzionale (puoi anche non salvarle)
+                      photoBlobs: normalizedBlobs,
+                      photoPreviewUrls: previewUrls,
+                      uploading: false,
+                    });
+                  } catch (err) {
+                    console.error(err);
+                    updateEntry(entry.id, {
+                      uploading: false,
+                      error: "Failed to process photos.",
+                    });
+                  }
                 }}
+
               />
 
               {entry.photoFiles.length > 0 && (
@@ -466,11 +609,41 @@ export default function UploadPanel() {
 
               {entry.photoPreviewUrls?.length > 0 && (
                 <div className="grid">
-                  {entry.photoPreviewUrls.map((url) => (
-                    <img className="thumb" key={url} src={url} alt="preview" />
+                  {entry.photoPreviewUrls.map((url, i) => (
+                    <div key={url} style={{ position: "relative" }}>
+                      <img className="thumb" src={url} alt="photo" />
+
+                      <button
+                        onClick={() => {
+                          // revoke preview
+                          URL.revokeObjectURL(url);
+
+                          updateEntry(entry.id, {
+                            photoBlobs: entry.photoBlobs.filter((_, idx) => idx !== i),
+                            photoPreviewUrls: entry.photoPreviewUrls.filter((_, idx) => idx !== i),
+                          });
+                        }}
+                        style={{
+                          position: "absolute",
+                          top: 6,
+                          right: 6,
+                          width: 26,
+                          height: 26,
+                          borderRadius: 999,
+                          border: "none",
+                          cursor: "pointer",
+                          background: "rgba(0,0,0,0.7)",
+                          color: "white",
+                          fontWeight: 900,
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
+
             </div>
           </div>
         ))}
