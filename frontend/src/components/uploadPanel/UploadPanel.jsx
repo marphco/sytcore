@@ -3,38 +3,26 @@ import axios from "axios";
 import jsPDF from "jspdf";
 import "./UploadPanel.css";
 import { normalizeImage } from "../../utils/normalizeImage";
-import { startWavRecording, stopWavRecording } from "../../utils/wavRecorder";
 
-import {
-  DndContext,
-  closestCenter,
-} from "@dnd-kit/core";
-
+import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
   arrayMove,
   SortableContext,
   rectSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable";
-
 import { CSS } from "@dnd-kit/utilities";
-
 
 const API_URL = import.meta.env.VITE_API_URL;
 
-// ---------- Helpers ----------
 function createEntry() {
   return {
     id: crypto.randomUUID(),
-
     audioBlob: null,
     audioPreviewUrl: null,
-
     photos: [],
-
     transcript: null,
     text: "",
-
     uploading: false,
     transcribing: false,
     error: null,
@@ -45,14 +33,8 @@ function createEntry() {
 const LS_KEY = "sytcore_entries_v1";
 
 function SortablePhoto({ photo, onRemove }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: photo.id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: photo.id });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -64,7 +46,6 @@ function SortablePhoto({ photo, onRemove }) {
   return (
     <div ref={setNodeRef} style={style} className="thumbWrap">
       <img className="thumb" src={photo.url} alt="photo" />
-
       <button
         type="button"
         className="thumbRemove"
@@ -73,8 +54,6 @@ function SortablePhoto({ photo, onRemove }) {
       >
         ✕
       </button>
-
-      {/* handle */}
       <div className="dragHandle" {...attributes} {...listeners}>
         ⠿
       </div>
@@ -93,7 +72,7 @@ export default function UploadPanel() {
     return d.toISOString().slice(0, 10);
   });
 
-  // ✅ QUESTO VA QUI (TOP LEVEL)
+  // input photos refs
   const fileInputRef = useRef({});
 
   // MediaRecorder refs
@@ -101,14 +80,17 @@ export default function UploadPanel() {
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
 
-  const wavRecorderRef = useRef(null);
-
+  // 🔥 guard per bloccare localStorage mentre registri + durante onstop
+  const isRecordingRef = useRef(false);
 
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
+  // ----------------------------
+  // GLOBAL ERROR HANDLERS (debug)
+  // ----------------------------
   useEffect(() => {
     const onError = (msg, src, line, col, err) => {
       console.log("🔥 window.onerror:", msg, src, line, col, err);
@@ -129,27 +111,9 @@ export default function UploadPanel() {
     };
   }, []);
 
-  useEffect(() => {
-    const handler = () => {
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify({
-          projectName,
-          reportDate,
-          entries: entries.map(e => ({
-            id: e.id,
-            transcript: e.transcript,
-            text: e.text,
-          })),
-        }));
-      } catch { }
-    };
-
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [entries, projectName, reportDate]);
-
-
-  // ---------- Load from localStorage ----------
+  // ----------------------------
+  // LOAD FROM LOCALSTORAGE (once)
+  // ----------------------------
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -172,11 +136,15 @@ export default function UploadPanel() {
     } catch (err) {
       console.error("localStorage load error:", err);
     }
-    // eslint-disable-next-line
   }, []);
 
-  // ---------- Save to localStorage ----------
+  // ---------------------------------
+  // SAVE TO LOCALSTORAGE (single effect)
+  // ✅ with guard: skip while recording
+  // ---------------------------------
   useEffect(() => {
+    if (isRecordingRef.current) return;
+
     try {
       const minimal = {
         projectName,
@@ -187,14 +155,15 @@ export default function UploadPanel() {
           text: e.text,
         })),
       };
-
       localStorage.setItem(LS_KEY, JSON.stringify(minimal));
     } catch (err) {
-      console.error("localStorage save error:", err);
+      console.warn("localStorage save failed", err);
     }
   }, [entries, projectName, reportDate]);
 
-  // ---------- Update entry ----------
+  // ----------------------------
+  // UPDATE ENTRY HELPER
+  // ----------------------------
   const updateEntry = (id, patch) => {
     setEntries((prev) =>
       prev.map((e) => {
@@ -212,40 +181,18 @@ export default function UploadPanel() {
     );
   };
 
-  useEffect(() => {
-    const minimal = {
-      projectName,
-      reportDate,
-      entries: entries.map((e) => ({
-        id: e.id,
-        transcript: e.transcript,
-        text: e.text,
-      })),
-    };
-
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify(minimal));
-    } catch (e) {
-      console.warn("localStorage write failed", e);
-    }
-  }, [entries, projectName, reportDate]);
-
-
-  // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB
+  // ----------------------------
+  // TRANSCRIBE
+  // ----------------------------
   const transcribeBlob = async (entryId, audioBlob) => {
-    updateEntry(entryId, {
-      transcribing: true,
-      error: null,
-    });
+    updateEntry(entryId, { transcribing: true, error: null });
 
     try {
       const formData = new FormData();
 
-      // ✅ IMPORTANT: send blob directly (Safari safe)
-      const ext = audioBlob.type.includes("mp4") ? "m4a" : "webm";
+      // Safari: meglio usare estensione coerente al mime
+      const ext = audioBlob.type?.includes("mp4") ? "m4a" : "webm";
       formData.append("audio", audioBlob, `voice-note.${ext}`);
-
-
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -270,17 +217,23 @@ export default function UploadPanel() {
     }
   };
 
-
+  // ----------------------------
+  // CLEANUP RECORDING (robust)
+  // ----------------------------
   const cleanupRecording = () => {
     try {
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.ondataavailable = null;
-        mediaRecorderRef.current.onstop = null;
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
       }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
+
+      const stream = streamRef.current;
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
       }
+
       chunksRef.current = [];
       mediaRecorderRef.current = null;
     } catch (e) {
@@ -288,53 +241,83 @@ export default function UploadPanel() {
     }
   };
 
-
-  // ---------- Recording ----------
+  // ----------------------------
+  // MIME TYPE PICKER
+  // ----------------------------
   const getSupportedMimeType = () => {
-    const types = [
-      "audio/mp4",
-      "audio/aac",
-      "audio/webm;codecs=opus",
-      "audio/webm",
-    ];
+    // su iOS Safari spesso audio/mp4 è la scelta più stabile
+    const types = ["audio/mp4", "audio/aac", "audio/webm;codecs=opus", "audio/webm"];
     return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
   };
 
+  // ----------------------------
+  // START RECORDING
+  // ----------------------------
   const startRecording = async (entryId) => {
-    updateEntry(entryId, { error: null });
     setGlobalError(null);
+    updateEntry(entryId, { error: null });
+
+    if (!hasMediaRecorder) {
+      updateEntry(entryId, { error: "Recording not supported on this browser." });
+      return;
+    }
+
+    // blocca salvataggi localStorage durante recording + stop flow
+    isRecordingRef.current = true;
 
     try {
+      cleanupRecording();
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
 
       const mimeType = getSupportedMimeType();
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
       mediaRecorderRef.current = recorder;
-      streamRef.current = stream;
       chunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
       };
 
       recorder.onstop = () => {
         const safeChunks = [...chunksRef.current];
 
-        // 🔥 Safari fix: delay blob creation
-        setTimeout(async () => {
+        // ✅ guard: se vuoto, non fare nulla
+        if (!safeChunks.length) {
+          updateEntry(entryId, {
+            recording: false,
+            error: "Empty recording. Try again.",
+          });
+          cleanupRecording();
+          isRecordingRef.current = false;
+          return;
+        }
+
+        // Safari: delay per evitare crash
+        setTimeout(() => {
           try {
-            const blob = new Blob(safeChunks, { type: recorder.mimeType });
+            const blob = new Blob(safeChunks, {
+              type: recorder.mimeType || safeChunks[0]?.type || "audio/mp4",
+            });
 
             if (!blob || blob.size === 0) {
               updateEntry(entryId, {
                 recording: false,
                 error: "Empty recording. Try again.",
               });
+              cleanupRecording();
+              isRecordingRef.current = false;
               return;
             }
+
+            // ✅ stop stream BEFORE url creation (Safari stability)
+            try {
+              stream.getTracks().forEach((t) => t.stop());
+            } catch {}
 
             const previewUrl = URL.createObjectURL(blob);
 
@@ -345,21 +328,24 @@ export default function UploadPanel() {
               error: null,
             });
 
-            // ✅ stop stream safely
-            stream.getTracks().forEach((t) => t.stop());
+            cleanupRecording();
 
-            // ✅ transcription delayed (avoid crash)
+            // ✅ transcribe after a short delay
             setTimeout(() => {
               transcribeBlob(entryId, blob);
-            }, 200);
+              // ✅ sblocca localStorage solo dopo aver schedulato tutto
+              isRecordingRef.current = false;
+            }, 250);
           } catch (err) {
-            console.error("STOP ERROR:", err);
+            console.error("STOP PROCESS ERROR:", err);
             updateEntry(entryId, {
               recording: false,
               error: "Recording processing failed.",
             });
+            cleanupRecording();
+            isRecordingRef.current = false;
           }
-        }, 80);
+        }, 120);
       };
 
       recorder.start(250);
@@ -370,17 +356,23 @@ export default function UploadPanel() {
         recording: false,
         error: "Microphone permission denied or recording failed.",
       });
+      cleanupRecording();
+      isRecordingRef.current = false;
     }
   };
 
+  // ----------------------------
+  // STOP RECORDING
+  // ❌ IMPORTANT: NON toccare isRecordingRef qui
+  // lo settiamo a false solo dentro onstop, quando tutto è finito
+  // ----------------------------
   const stopRecording = (entryId) => {
     try {
       const recorder = mediaRecorderRef.current;
       if (!recorder) return;
-
       if (recorder.state === "inactive") return;
-      recorder.stop();
 
+      recorder.stop();
       updateEntry(entryId, { recording: false });
     } catch (err) {
       console.error("stopRecording error:", err);
@@ -388,11 +380,14 @@ export default function UploadPanel() {
         recording: false,
         error: "Could not stop recording.",
       });
+      cleanupRecording();
+      isRecordingRef.current = false;
     }
   };
 
-
-  // ---------- Photos handler ----------
+  // ----------------------------
+  // ADD PHOTOS
+  // ----------------------------
   const addPhotosToEntry = async (entryId, files) => {
     if (!files || files.length === 0) return;
 
@@ -426,8 +421,9 @@ export default function UploadPanel() {
     }
   };
 
-
-  // ---------- Reset Entry ----------
+  // ----------------------------
+  // RESET ENTRY
+  // ----------------------------
   const resetEntry = (entryId) => {
     setEntries((prev) =>
       prev.map((e) => {
@@ -455,7 +451,9 @@ export default function UploadPanel() {
     setEntries([createEntry()]);
   };
 
-  // ---------- PDF ----------
+  // ----------------------------
+  // PDF GENERATION (unchanged)
+  // ----------------------------
   const generatePDF = async () => {
     setGlobalError(null);
 
@@ -468,7 +466,6 @@ export default function UploadPanel() {
       const contentW = pageW - margin * 2;
       let y = margin;
 
-      // Header
       doc.setFont("helvetica", "bold");
       doc.setFontSize(18);
       doc.text(`${projectName || "SYTCORE"} Daily Report`, margin, y);
@@ -540,7 +537,6 @@ export default function UploadPanel() {
           doc.setDrawColor(200);
           doc.setFillColor(245, 245, 245);
           doc.roundedRect(x, y, cellW, cellH, 2, 2, "FD");
-
           doc.addImage(dataUrl, "JPEG", offsetX, offsetY, drawW, drawH);
 
           col++;
@@ -575,7 +571,6 @@ export default function UploadPanel() {
         doc.setFont("helvetica", "normal");
         doc.setFontSize(11);
         doc.text(lines, margin + 3, y + 7);
-
         y += textH + 14;
 
         ensureSpace(10);
@@ -647,7 +642,6 @@ export default function UploadPanel() {
       <div className="entries">
         {entries.map((entry, idx) => (
           <div key={entry.id} className="entryCard">
-            {/* LEFT */}
             <div className="leftCol">
               <p className="entryHeader">Entry #{idx + 1}</p>
 
@@ -671,7 +665,6 @@ export default function UploadPanel() {
                   </button>
                 )}
 
-
                 <button
                   className="btnGhost"
                   onClick={() => resetEntry(entry.id)}
@@ -681,7 +674,6 @@ export default function UploadPanel() {
                   🗑 Reset
                 </button>
               </div>
-
 
               {entry.audioPreviewUrl && (
                 <audio className="audio" controls src={entry.audioPreviewUrl} />
@@ -703,7 +695,6 @@ export default function UploadPanel() {
               </div>
             </div>
 
-            {/* RIGHT */}
             <div className="rightCol">
               <p className="sectionTitle">Photos</p>
 
@@ -750,11 +741,8 @@ export default function UploadPanel() {
               </div>
 
               {entry.photos?.length > 0 && (
-                <p className="mutedSmall">
-                  ✅ {entry.photos.length} photo(s) selected
-                </p>
+                <p className="mutedSmall">✅ {entry.photos.length} photo(s) selected</p>
               )}
-
 
               {entry.photos?.length > 0 && (
                 <DndContext
@@ -767,9 +755,7 @@ export default function UploadPanel() {
                       const oldIndex = prev.photos.findIndex((p) => p.id === active.id);
                       const newIndex = prev.photos.findIndex((p) => p.id === over.id);
 
-                      return {
-                        photos: arrayMove(prev.photos, oldIndex, newIndex),
-                      };
+                      return { photos: arrayMove(prev.photos, oldIndex, newIndex) };
                     });
                   }}
                 >
@@ -795,7 +781,6 @@ export default function UploadPanel() {
                   </SortableContext>
                 </DndContext>
               )}
-
             </div>
           </div>
         ))}
