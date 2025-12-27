@@ -80,17 +80,6 @@ function SortablePhoto({ photo, onRemove }) {
   );
 }
 
-const isIOS = () =>
-  typeof navigator !== "undefined" &&
-  /iPad|iPhone|iPod/.test(navigator.userAgent);
-
-const isSafari = () =>
-  typeof navigator !== "undefined" &&
-  /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-
-const useNativeRecorder = () => isIOS() && isSafari();
-
-
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
   const [globalError, setGlobalError] = useState(null);
@@ -104,8 +93,6 @@ export default function UploadPanel() {
 
   // ✅ QUESTO VA QUI (TOP LEVEL)
   const fileInputRef = useRef({});
-  const audioInputRef = useRef({});
-
 
   // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
@@ -115,8 +102,7 @@ export default function UploadPanel() {
   const hasMediaRecorder =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
-    typeof MediaRecorder !== "undefined" &&
-    !useNativeRecorder();
+    typeof MediaRecorder !== "undefined";
 
   useEffect(() => {
     const onError = (msg, src, line, col, err) => {
@@ -251,7 +237,7 @@ export default function UploadPanel() {
       const formData = new FormData();
 
       // ✅ IMPORTANT: send blob directly (Safari safe)
-      const ext = audioBlob.type.includes("mp4") ? "m4a" : "webm";
+      const ext = audioBlob.type.includes("mp4") ? "m4a" : "aac";
       formData.append("audio", audioBlob, `voice-note.${ext}`);
 
 
@@ -300,12 +286,9 @@ export default function UploadPanel() {
     const types = [
       "audio/mp4",
       "audio/aac",
-      "audio/webm;codecs=opus",
-      "audio/webm",
     ];
     return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
   };
-
 
 
   // ---------- Recording ----------
@@ -318,55 +301,48 @@ export default function UploadPanel() {
       return;
     }
 
-    // se per qualche motivo c'è un recorder attivo -> cleanup
+    // blocco doppio click
     if (mediaRecorderRef.current?.state === "recording") {
-      updateEntry(entryId, { error: "Already recording. Stop it first." });
+      updateEntry(entryId, { error: "Already recording. Stop first." });
       return;
     }
 
     try {
-      // cleanup prima di iniziare
       cleanupRecording();
-
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        projectName,
-        reportDate,
-        entries: entries.map((e) => ({
-          id: e.id,
-          transcript: e.transcript,
-          text: e.text,
-        })),
-      }));
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      // Safari a volte vuole un mimeType specifico
       const mimeType = getSupportedMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      if (!mimeType) {
+        updateEntry(entryId, {
+          error: "Safari cannot record audio (no supported mimeType).",
+        });
+        cleanupRecording();
+        return;
+      }
 
+      const recorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = recorder;
-
       chunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data?.size > 0) chunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
       };
 
       recorder.onstop = () => {
         const safeChunks = [...chunksRef.current];
 
-        // ✅ IMPORTANT: Safari fix - delay everything
-        setTimeout(() => {
+        requestAnimationFrame(() => {
           try {
-            const blob = new Blob(safeChunks, {
-              type: recorder.mimeType || safeChunks[0]?.type || "audio/mp4",
-            });
+            const blob = new Blob(safeChunks, { type: mimeType });
 
             if (!blob || blob.size === 0) {
               updateEntry(entryId, {
                 recording: false,
-                error: "Recording failed (empty audio). Try again.",
+                error: "Recording failed (empty blob).",
               });
               cleanupRecording();
               return;
@@ -383,40 +359,29 @@ export default function UploadPanel() {
 
             cleanupRecording();
 
-            // ✅ transcribe outside event loop
             setTimeout(() => {
               transcribeBlob(entryId, blob);
-            }, 250);
+            }, 500);
 
           } catch (err) {
-            console.error("onstop crash:", err);
+            console.error("Safari onstop crash:", err);
             updateEntry(entryId, {
               recording: false,
-              error: "Recording processing failed. Please retry.",
+              error: "Recording processing failed on Safari.",
             });
             cleanupRecording();
           }
-        }, 50);
+        });
       };
 
-
-      try {
-        recorder.start(250);
-        updateEntry(entryId, { recording: true });
-      } catch (err) {
-        console.error("recorder.start failed:", err);
-        updateEntry(entryId, {
-          recording: false,
-          error: "Recording failed on Safari. Try closing other tabs or use Chrome.",
-        });
-        cleanupRecording();
-      }
+      recorder.start(1000); // ✅ IMPORTANT: chunk every 1s
+      updateEntry(entryId, { recording: true });
 
     } catch (err) {
       console.error("startRecording error:", err);
       updateEntry(entryId, {
         recording: false,
-        error: "Microphone permission denied or recording error.",
+        error: "Microphone permission denied or Safari error.",
       });
       cleanupRecording();
     }
@@ -424,23 +389,18 @@ export default function UploadPanel() {
 
 
   const stopRecording = (entryId) => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+
     try {
-      const recorder = mediaRecorderRef.current;
-      if (!recorder) return;
-
-      if (recorder.state === "inactive") return; // già stoppato
-      recorder.stop();
-
-      updateEntry(entryId, { recording: false });
+      if (recorder.state !== "inactive") recorder.stop();
     } catch (err) {
       console.error("stopRecording error:", err);
-      updateEntry(entryId, {
-        recording: false,
-        error: "Could not stop recording. Please retry.",
-      });
-      cleanupRecording();
     }
+
+    updateEntry(entryId, { recording: false });
   };
+
 
 
   // ---------- Photos handler ----------
@@ -704,51 +664,14 @@ export default function UploadPanel() {
 
               <div className="controlsRow">
                 {!entry.recording ? (
-                  useNativeRecorder() ? (
-                    <>
-                      <button
-                        className="btn"
-                        onClick={() => audioInputRef.current[entry.id]?.click()}
-                        disabled={entry.transcribing}
-                        type="button"
-                      >
-                        🎙 Record
-                      </button>
-
-                      <input
-                        ref={(el) => (audioInputRef.current[entry.id] = el)}
-                        type="file"
-                        accept="audio/mp4,audio/x-m4a,audio/m4a,audio/*"
-                        hidden
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-
-                          const previewUrl = URL.createObjectURL(file);
-
-                          updateEntry(entry.id, {
-                            audioBlob: file,
-                            audioPreviewUrl: previewUrl,
-                            error: null,
-                          });
-
-                          await transcribeBlob(entry.id, file);
-
-                          e.target.value = "";
-                        }}
-                      />
-
-                    </>
-                  ) : (
-                    <button
-                      className="btn"
-                      onClick={() => startRecording(entry.id)}
-                      disabled={!hasMediaRecorder || entry.transcribing}
-                      type="button"
-                    >
-                      🎙 Record
-                    </button>
-                  )
+                  <button
+                    className="btn"
+                    onClick={() => startRecording(entry.id)}
+                    disabled={!hasMediaRecorder || entry.transcribing}
+                    type="button"
+                  >
+                    🎙 Record
+                  </button>
                 ) : (
                   <button
                     className="btn"
@@ -758,6 +681,7 @@ export default function UploadPanel() {
                     ⏹ Stop
                   </button>
                 )}
+
 
                 <button
                   className="btnGhost"
