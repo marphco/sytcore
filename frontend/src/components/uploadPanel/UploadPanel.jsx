@@ -185,7 +185,9 @@ export default function UploadPanel() {
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
+        timeout: 45000, // 45s
       });
+
 
       updateEntry(entryId, {
         transcript: tRes.data.transcript,
@@ -197,69 +199,145 @@ export default function UploadPanel() {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
       updateEntry(entryId, {
         transcribing: false,
-        error: err?.response?.data?.error || "Transcription failed.",
+        error: err.code === "ECONNABORTED"
+          ? "Transcription timed out. Try again."
+          : err?.response?.data?.error || "Transcription failed.",
       });
     }
   };
+
+  const cleanupRecording = () => {
+    try {
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.ondataavailable = null;
+        mediaRecorderRef.current.onstop = null;
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      chunksRef.current = [];
+      mediaRecorderRef.current = null;
+    } catch (e) {
+      console.warn("cleanupRecording error:", e);
+    }
+  };
+
 
   // ---------- Recording ----------
   const startRecording = async (entryId) => {
     setGlobalError(null);
     updateEntry(entryId, { error: null });
 
+    if (!hasMediaRecorder) {
+      updateEntry(entryId, { error: "Recording not supported on this device." });
+      return;
+    }
+
+    // se per qualche motivo c'è un recorder attivo -> cleanup
     if (mediaRecorderRef.current?.state === "recording") {
       updateEntry(entryId, { error: "Already recording. Stop it first." });
       return;
     }
 
     try {
+      // cleanup prima di iniziare
+      cleanupRecording();
+
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        projectName,
+        reportDate,
+        entries: entries.map((e) => ({
+          id: e.id,
+          transcript: e.transcript,
+          text: e.text,
+        })),
+      }));
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
+      // Safari a volte vuole un mimeType specifico
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
+
       chunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data?.size > 0) chunksRef.current.push(e.data);
       };
 
       recorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
+        try {
+          const blob = new Blob(chunksRef.current, {
+            type: recorder.mimeType || "audio/webm",
+          });
 
-        const previewUrl = URL.createObjectURL(blob);
+          if (!blob || blob.size === 0) {
+            updateEntry(entryId, {
+              recording: false,
+              error: "Recording failed (empty audio). Try again.",
+            });
+            cleanupRecording();
+            return;
+          }
 
-        updateEntry(entryId, {
-          audioBlob: blob,
-          audioPreviewUrl: previewUrl,
-          recording: false,
-          error: null,
-        });
+          const previewUrl = URL.createObjectURL(blob);
 
-        stream.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
+          updateEntry(entryId, {
+            audioBlob: blob,
+            audioPreviewUrl: previewUrl,
+            recording: false,
+            error: null,
+          });
 
-        await transcribeBlob(entryId, blob);
+          // stop tracks
+          cleanupRecording();
+
+          // transcribe
+          await transcribeBlob(entryId, blob);
+        } catch (err) {
+          console.error("onstop error:", err);
+          updateEntry(entryId, {
+            recording: false,
+            error: "Recording processing failed. Please retry.",
+          });
+          cleanupRecording();
+        }
       };
 
       recorder.start();
       updateEntry(entryId, { recording: true });
     } catch (err) {
-      console.error(err);
+      console.error("startRecording error:", err);
       updateEntry(entryId, {
         recording: false,
         error: "Microphone permission denied or recording error.",
       });
+      cleanupRecording();
     }
   };
 
+
   const stopRecording = (entryId) => {
-    if (!mediaRecorderRef.current) return;
-    mediaRecorderRef.current.stop();
-    updateEntry(entryId, { recording: false });
+    try {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder) return;
+
+      if (recorder.state === "inactive") return; // già stoppato
+      recorder.stop();
+
+      updateEntry(entryId, { recording: false });
+    } catch (err) {
+      console.error("stopRecording error:", err);
+      updateEntry(entryId, {
+        recording: false,
+        error: "Could not stop recording. Please retry.",
+      });
+      cleanupRecording();
+    }
   };
+
 
   // ---------- Photos handler ----------
   const addPhotosToEntry = async (entryId, files) => {

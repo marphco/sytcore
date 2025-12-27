@@ -35,7 +35,12 @@
 // export default App
 
 import UploadPanel from "./components/uploadPanel/UploadPanel";
+import ErrorBoundary from "./components/errorBoundary/ErrorBoundary";
 
 export default function App() {
-  return <UploadPanel />;
+  return (
+    <ErrorBoundary>
+      <UploadPanel />
+    </ErrorBoundary>
+  )
 }
