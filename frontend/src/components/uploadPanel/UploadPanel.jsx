@@ -105,6 +105,46 @@ export default function UploadPanel() {
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
+  useEffect(() => {
+    const onError = (msg, src, line, col, err) => {
+      console.log("🔥 window.onerror:", msg, src, line, col, err);
+      alert("JS ERROR: " + msg);
+    };
+
+    const onRejection = (event) => {
+      console.log("🔥 unhandledrejection:", event.reason);
+      alert("PROMISE ERROR: " + (event.reason?.message || event.reason));
+    };
+
+    window.onerror = onError;
+    window.onunhandledrejection = onRejection;
+
+    return () => {
+      window.onerror = null;
+      window.onunhandledrejection = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify({
+          projectName,
+          reportDate,
+          entries: entries.map(e => ({
+            id: e.id,
+            transcript: e.transcript,
+            text: e.text,
+          })),
+        }));
+      } catch { }
+    };
+
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [entries, projectName, reportDate]);
+
+
   // ---------- Load from localStorage ----------
   useEffect(() => {
     try {
@@ -298,48 +338,65 @@ export default function UploadPanel() {
         if (e.data?.size > 0) chunksRef.current.push(e.data);
       };
 
-      recorder.onstop = async () => {
-        try {
-          const blob = new Blob(chunksRef.current, {
-            type: recorder.mimeType || chunksRef.current[0]?.type || "audio/mp4",
-          });
+      recorder.onstop = () => {
+        const safeChunks = [...chunksRef.current];
 
+        // ✅ IMPORTANT: Safari fix - delay everything
+        setTimeout(() => {
+          try {
+            const blob = new Blob(safeChunks, {
+              type: recorder.mimeType || safeChunks[0]?.type || "audio/mp4",
+            });
 
-          if (!blob || blob.size === 0) {
+            if (!blob || blob.size === 0) {
+              updateEntry(entryId, {
+                recording: false,
+                error: "Recording failed (empty audio). Try again.",
+              });
+              cleanupRecording();
+              return;
+            }
+
+            const previewUrl = URL.createObjectURL(blob);
+
+            updateEntry(entryId, {
+              audioBlob: blob,
+              audioPreviewUrl: previewUrl,
+              recording: false,
+              error: null,
+            });
+
+            cleanupRecording();
+
+            // ✅ transcribe outside event loop
+            setTimeout(() => {
+              transcribeBlob(entryId, blob);
+            }, 250);
+
+          } catch (err) {
+            console.error("onstop crash:", err);
             updateEntry(entryId, {
               recording: false,
-              error: "Recording failed (empty audio). Try again.",
+              error: "Recording processing failed. Please retry.",
             });
             cleanupRecording();
-            return;
           }
-
-          const previewUrl = URL.createObjectURL(blob);
-
-          updateEntry(entryId, {
-            audioBlob: blob,
-            audioPreviewUrl: previewUrl,
-            recording: false,
-            error: null,
-          });
-
-          // stop tracks
-          cleanupRecording();
-
-          // transcribe
-          await transcribeBlob(entryId, blob);
-        } catch (err) {
-          console.error("onstop error:", err);
-          updateEntry(entryId, {
-            recording: false,
-            error: "Recording processing failed. Please retry.",
-          });
-          cleanupRecording();
-        }
+        }, 50);
       };
 
-      recorder.start();
-      updateEntry(entryId, { recording: true });
+
+      try {
+        recorder.start(250);
+        updateEntry(entryId, { recording: true });
+      } catch (err) {
+        console.error("recorder.start failed:", err);
+        updateEntry(entryId, {
+          recording: false,
+          error: "Recording failed on Safari. Try closing other tabs or use Chrome.",
+        });
+        cleanupRecording();
+      }
+
     } catch (err) {
       console.error("startRecording error:", err);
       updateEntry(entryId, {
