@@ -168,6 +168,25 @@ export default function UploadPanel() {
     );
   };
 
+  useEffect(() => {
+    const minimal = {
+      projectName,
+      reportDate,
+      entries: entries.map((e) => ({
+        id: e.id,
+        transcript: e.transcript,
+        text: e.text,
+      })),
+    };
+
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(minimal));
+    } catch (e) {
+      console.warn("localStorage write failed", e);
+    }
+  }, [entries, projectName, reportDate]);
+
+
   // ✅ AUTO TRANSCRIBE DIRECTLY FROM BLOB
   const transcribeBlob = async (entryId, audioBlob) => {
     updateEntry(entryId, {
@@ -177,17 +196,14 @@ export default function UploadPanel() {
 
     try {
       const formData = new FormData();
-      const file = new File([audioBlob], "voice-note.webm", {
-        type: audioBlob.type || "audio/webm",
-      });
 
-      formData.append("audio", file);
+      // ✅ IMPORTANT: send blob directly (Safari safe)
+      formData.append("audio", audioBlob, "voice-note.wav");
 
       const tRes = await axios.post(`${API_URL}/api/transcribe-file`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
-        timeout: 45000, // 45s
+        timeout: 45000,
       });
-
 
       updateEntry(entryId, {
         transcript: tRes.data.transcript,
@@ -199,12 +215,14 @@ export default function UploadPanel() {
       console.error("TRANSCRIBE ERROR:", err?.response?.data || err.message);
       updateEntry(entryId, {
         transcribing: false,
-        error: err.code === "ECONNABORTED"
-          ? "Transcription timed out. Try again."
-          : err?.response?.data?.error || "Transcription failed.",
+        error:
+          err.code === "ECONNABORTED"
+            ? "Transcription timed out. Try again."
+            : err?.response?.data?.error || "Transcription failed.",
       });
     }
   };
+
 
   const cleanupRecording = () => {
     try {
@@ -222,6 +240,17 @@ export default function UploadPanel() {
       console.warn("cleanupRecording error:", e);
     }
   };
+
+  const getSupportedMimeType = () => {
+    const types = [
+      "audio/mp4",
+      "audio/aac",
+      "audio/webm;codecs=opus",
+      "audio/webm",
+    ];
+    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  };
+
 
 
   // ---------- Recording ----------
@@ -258,7 +287,9 @@ export default function UploadPanel() {
       streamRef.current = stream;
 
       // Safari a volte vuole un mimeType specifico
-      const recorder = new MediaRecorder(stream);
+      const mimeType = getSupportedMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
       mediaRecorderRef.current = recorder;
 
       chunksRef.current = [];
@@ -270,8 +301,9 @@ export default function UploadPanel() {
       recorder.onstop = async () => {
         try {
           const blob = new Blob(chunksRef.current, {
-            type: recorder.mimeType || "audio/webm",
+            type: recorder.mimeType || chunksRef.current[0]?.type || "audio/mp4",
           });
+
 
           if (!blob || blob.size === 0) {
             updateEntry(entryId, {
