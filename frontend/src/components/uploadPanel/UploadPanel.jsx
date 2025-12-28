@@ -54,6 +54,14 @@ export default function UploadPanel() {
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
 
+  const isMobile = () => window.matchMedia("(max-width: 768px)").matches;
+
+  const openPdfMobile = () => {
+    if (!pdfPreviewUrl) return;
+    window.open(pdfPreviewUrl, "_blank", "noopener,noreferrer");
+  };
+
+
   const updateEntry = (id, patch) => {
     setEntries((prev) =>
       prev.map((e) => {
@@ -172,9 +180,9 @@ export default function UploadPanel() {
     <div className="wrapper">
       <div className="shell">
         <TopBar
-  isExporting={isExporting}
-  onClearReport={clearReport}
-/>
+          isExporting={isExporting}
+          onClearReport={clearReport}
+        />
 
         {globalError && <p className="error">{globalError}</p>}
 
@@ -267,9 +275,21 @@ export default function UploadPanel() {
               </div>
             </div>
 
-            <div className="previewFrameWrap">
-              <iframe title="PDF preview" src={pdfPreviewUrl} className="previewFrame" />
-            </div>
+            {!isMobile() ? (
+              <div className="previewFrameWrap">
+                <iframe title="PDF preview" src={pdfPreviewUrl} className="previewFrame" />
+              </div>
+            ) : (
+              <div style={{ textAlign: "center", padding: "18px 0" }}>
+                <button className="btnPrimary" type="button" onClick={openPdfMobile}>
+                  Open Preview
+                </button>
+                <p style={{ fontSize: 12, opacity: 0.65, marginTop: 10 }}>
+                  (opens in Safari for zoom & navigation)
+                </p>
+              </div>
+            )}
+
           </div>
         )}
       </div>
