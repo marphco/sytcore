@@ -157,6 +157,10 @@ export default function UploadPanel() {
   const fileInputRef = useRef({});
   const logoInputRef = useRef(null);
 
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null);
+  const [lastFileName, setLastFileName] = useState(null);
+
+
   // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
@@ -470,6 +474,11 @@ export default function UploadPanel() {
     if (isExporting) return;
     if (!confirm("Clear all entries?")) return;
 
+    if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
+    setPdfPreviewUrl(null);
+    setLastFileName(null);
+
+
     entries.forEach((e) => {
       if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
       e.photos?.forEach((p) => URL.revokeObjectURL(p.url));
@@ -693,10 +702,24 @@ export default function UploadPanel() {
         doc.setTextColor(0);
       }
 
+      // ✅ file name: DATE first (sortable) + project
       const safeProject = slugify(projectName || "site");
       const fileName = `${reportDate}__${safeProject}__daily-report.pdf`;
 
-      doc.save(fileName);
+      // ✅ generate blob for preview
+      const pdfBlob = doc.output("blob");
+
+      // ✅ remove previous preview url (avoid memory leaks)
+      if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
+
+      const blobUrl = URL.createObjectURL(pdfBlob);
+
+      // ✅ store preview + filename
+      setPdfPreviewUrl(blobUrl);
+      setLastFileName(fileName);
+
+      // ✅ NO AUTO DOWNLOAD anymore ✅
+
     } catch (err) {
       console.error(err);
       setGlobalError("PDF generation failed. Please try again.");
@@ -735,22 +758,6 @@ export default function UploadPanel() {
         <h2 className="title">SYTCORE Daily Report</h2>
 
         <div className="topActions">
-          <button
-            className="btnPrimaryGhost"
-            onClick={generatePDF}
-            disabled={isExporting}
-            type="button"
-          >
-            {isExporting ? (
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className="spinner" />
-                Generating…
-              </span>
-            ) : (
-              "Generate PDF"
-            )}
-          </button>
-
           <button
             className="btnDanger"
             onClick={clearReport}
@@ -946,6 +953,67 @@ export default function UploadPanel() {
       >
         ➕ Add Entry
       </button>
+
+      <button
+        className="btnPrimaryGhost"
+        onClick={generatePDF}
+        disabled={isExporting}
+        type="button"
+      >
+        {isExporting ? (
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="spinner" />
+            Generating…
+          </span>
+        ) : (
+          "Generate PDF"
+        )}
+      </button>
+
+      {pdfPreviewUrl && (
+        <div className="previewBox">
+          <div className="previewTop">
+            <p className="previewTitle">✅ Preview Ready</p>
+
+            <div className="previewActions">
+              <button
+                className="btnPrimaryGhost"
+                type="button"
+                onClick={() => {
+                  const link = document.createElement("a");
+                  link.href = pdfPreviewUrl;
+                  link.download = lastFileName || "daily-report.pdf";
+                  link.click();
+                }}
+              >
+                ⬇️ Download PDF
+              </button>
+
+              <button
+                className="btnDanger"
+                type="button"
+                onClick={() => {
+                  URL.revokeObjectURL(pdfPreviewUrl);
+                  setPdfPreviewUrl(null);
+                  setLastFileName(null);
+                }}
+              >
+                ✕ Close
+              </button>
+            </div>
+
+          </div>
+
+          <div className="previewFrameWrap">
+            <iframe
+              title="PDF preview"
+              src={pdfPreviewUrl}
+              className="previewFrame"
+            />
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
