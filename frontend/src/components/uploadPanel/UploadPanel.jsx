@@ -14,6 +14,19 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+// ✅ ICONS (premium)
+import {
+  Mic,
+  Square,
+  RotateCcw,
+  Trash2,
+  Plus,
+  Download,
+  X,
+  ImagePlus,
+  Eraser,
+} from "lucide-react";
+
 const RAW_API_URL = import.meta.env.VITE_API_URL || "";
 const API_URL = RAW_API_URL.startsWith("http")
   ? RAW_API_URL
@@ -58,7 +71,7 @@ function slugify(str) {
     .replace(/-+/g, "-");
 }
 
-// ✅ Compress image before adding to PDF (keeps aspect ratio)
+// ✅ Compress image before adding to PDF
 async function compressImageToDataUrl(
   fileOrBlob,
   targetMaxWidth = 1400,
@@ -91,9 +104,7 @@ async function compressImageToDataUrl(
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0, newW, newH);
 
-      // ✅ always output JPEG for best compression
       const compressed = canvas.toDataURL("image/jpeg", quality);
-
       resolve(compressed);
     };
 
@@ -116,6 +127,7 @@ function SortablePhoto({ photo, onRemove, disabled }) {
   return (
     <div ref={setNodeRef} style={style} className="thumbWrap">
       <img className="thumb" src={photo.url} alt="photo" />
+
       <button
         type="button"
         className="thumbRemove"
@@ -123,8 +135,9 @@ function SortablePhoto({ photo, onRemove, disabled }) {
         aria-label="Remove photo"
         disabled={disabled}
       >
-        ✕
+        <X size={16} />
       </button>
+
       <div
         className="dragHandle"
         {...attributes}
@@ -141,7 +154,6 @@ export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
   const [globalError, setGlobalError] = useState(null);
 
-  // ✅ Export state (NEW)
   const [isExporting, setIsExporting] = useState(false);
 
   const [projectName, setProjectName] = useState("");
@@ -151,7 +163,6 @@ export default function UploadPanel() {
     return d.toISOString().slice(0, 10);
   });
 
-  // ✅ Logo state
   const [logoDataUrl, setLogoDataUrl] = useState(null);
 
   const fileInputRef = useRef({});
@@ -160,8 +171,6 @@ export default function UploadPanel() {
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null);
   const [lastFileName, setLastFileName] = useState(null);
 
-
-  // MediaRecorder refs
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -234,7 +243,6 @@ export default function UploadPanel() {
     );
   };
 
-  // ✅ Delete Entry
   const deleteEntry = (entryId) => {
     if (isExporting) return;
     if (!confirm("Delete this entry?")) return;
@@ -250,7 +258,7 @@ export default function UploadPanel() {
     });
   };
 
-  // ---------- LOGO UPLOAD (PNG/JPG/WebP + SVG) ----------
+  // ---------- LOGO UPLOAD ----------
   const handleLogoUpload = async (file) => {
     if (!file) return;
 
@@ -450,7 +458,6 @@ export default function UploadPanel() {
     }
   };
 
-  // ---------- Reset Entry ----------
   const resetEntry = (entryId) => {
     if (isExporting) return;
 
@@ -469,7 +476,6 @@ export default function UploadPanel() {
     setEntries((prev) => [...prev, createEntry()]);
   };
 
-  // ✅ Clear Report
   const clearReport = () => {
     if (isExporting) return;
     if (!confirm("Clear all entries?")) return;
@@ -477,7 +483,6 @@ export default function UploadPanel() {
     if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
     setPdfPreviewUrl(null);
     setLastFileName(null);
-
 
     entries.forEach((e) => {
       if (e.audioPreviewUrl) URL.revokeObjectURL(e.audioPreviewUrl);
@@ -492,7 +497,7 @@ export default function UploadPanel() {
 
   // ---------- PDF ----------
   const generatePDF = async () => {
-    if (isExporting) return; // ✅ prevent double click
+    if (isExporting) return;
 
     setGlobalError(null);
 
@@ -510,8 +515,6 @@ export default function UploadPanel() {
 
     try {
       setIsExporting(true);
-
-      // ✅ let UI breathe (shows spinner before heavy work starts)
       await new Promise((r) => setTimeout(r, 50));
 
       const doc = new jsPDF("p", "mm", "a4");
@@ -590,10 +593,8 @@ export default function UploadPanel() {
         y = isFirstPage ? headerTop + logoBox + 14 : headerTop + logoBox + 10;
       };
 
-      // First page header
       drawHeader(true);
 
-      // Entries
       for (let i = 0; i < entries.length; i++) {
         const e = entries[i];
 
@@ -607,10 +608,7 @@ export default function UploadPanel() {
         const boxW = pageW - marginX * 2;
         const padding = 6;
 
-        const textLines = doc.splitTextToSize(
-          e.text || "",
-          boxW - padding * 4
-        );
+        const textLines = doc.splitTextToSize(e.text || "", boxW - padding * 4);
         const textH = Math.max(18, textLines.length * 5 + 10);
 
         const photos = e.photos?.slice(0, 4) || [];
@@ -684,7 +682,6 @@ export default function UploadPanel() {
         y += entryH + 12;
       }
 
-      // Footer pagination
       const totalPages = doc.getNumberOfPages();
 
       for (let p = 1; p <= totalPages; p++) {
@@ -702,24 +699,16 @@ export default function UploadPanel() {
         doc.setTextColor(0);
       }
 
-      // ✅ file name: DATE first (sortable) + project
       const safeProject = slugify(projectName || "site");
       const fileName = `${reportDate}__${safeProject}__daily-report.pdf`;
 
-      // ✅ generate blob for preview
       const pdfBlob = doc.output("blob");
-
-      // ✅ remove previous preview url (avoid memory leaks)
       if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
 
       const blobUrl = URL.createObjectURL(pdfBlob);
 
-      // ✅ store preview + filename
       setPdfPreviewUrl(blobUrl);
       setLastFileName(fileName);
-
-      // ✅ NO AUTO DOWNLOAD anymore ✅
-
     } catch (err) {
       console.error(err);
       setGlobalError("PDF generation failed. Please try again.");
@@ -730,53 +719,42 @@ export default function UploadPanel() {
 
   return (
     <div className="wrapper">
+      <div className="shell">
       <div className="topBar">
-        <div className="metaRow">
-          <div className="metaField">
-            <label>Project</label>
-            <input
-              value={projectName}
-              disabled={isExporting}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="Project name..."
-              className="metaInput"
-            />
+        {/* LEFT */}
+        <div className="topLeft">
+          <div className="metaRow">
+            <div className="metaField">
+              <label>Project</label>
+              <input
+                value={projectName}
+                disabled={isExporting}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="Project name..."
+                className="metaInput"
+              />
+            </div>
+
+            <div className="metaField">
+              <label>Report date</label>
+              <input
+                type="date"
+                value={reportDate}
+                disabled={isExporting}
+                onChange={(e) => setReportDate(e.target.value)}
+                className="metaInput"
+              />
+            </div>
           </div>
 
-          <div className="metaField">
-            <label>Report date</label>
-            <input
-              type="date"
-              value={reportDate}
-              disabled={isExporting}
-              onChange={(e) => setReportDate(e.target.value)}
-              className="metaInput"
-            />
-          </div>
-        </div>
-
-        <h2 className="title">SYTCORE Daily Report</h2>
-
-        <div className="topActions">
-          <button
-            className="btnDanger"
-            onClick={clearReport}
-            disabled={isExporting}
-            type="button"
-          >
-            Clear Report
-          </button>
-        </div>
-
-        {/* ✅ LOGO UPLOAD */}
-        <div style={{ marginTop: 6 }}>
           <button
             className="btnGhost"
             type="button"
             disabled={isExporting}
             onClick={() => logoInputRef.current?.click()}
           >
-            {logoDataUrl ? "✅ Logo Added (Change)" : "➕ Add Logo"}
+            <ImagePlus size={16} />
+            {logoDataUrl ? "Change Logo" : "Add Logo"}
           </button>
 
           <input
@@ -790,6 +768,22 @@ export default function UploadPanel() {
               e.target.value = "";
             }}
           />
+        </div>
+
+        {/* CENTER */}
+        <h2 className="title">SYTCORE Daily Report</h2>
+
+        {/* RIGHT */}
+        <div className="topRight">
+          <button
+            className="btnDanger"
+            onClick={clearReport}
+            disabled={isExporting}
+            type="button"
+          >
+            <Eraser size={16} />
+            Clear Report
+          </button>
         </div>
       </div>
 
@@ -809,7 +803,8 @@ export default function UploadPanel() {
                     onClick={() => startRecording(entry.id)}
                     type="button"
                   >
-                    🎙 Record
+                    <Mic size={16} />
+                    Record
                   </button>
                 ) : (
                   <button
@@ -818,7 +813,8 @@ export default function UploadPanel() {
                     onClick={stopRecording}
                     type="button"
                   >
-                    ⏹ Stop
+                    <Square size={16} />
+                    Stop
                   </button>
                 )}
 
@@ -828,7 +824,8 @@ export default function UploadPanel() {
                   onClick={() => resetEntry(entry.id)}
                   type="button"
                 >
-                  🗑 Reset
+                  <RotateCcw size={16} />
+                  Reset
                 </button>
 
                 <button
@@ -837,7 +834,8 @@ export default function UploadPanel() {
                   onClick={() => deleteEntry(entry.id)}
                   type="button"
                 >
-                  ❌ Delete
+                  <Trash2 size={16} />
+                  Delete
                 </button>
               </div>
 
@@ -951,11 +949,12 @@ export default function UploadPanel() {
         onClick={addEntry}
         disabled={isExporting}
       >
-        ➕ Add Entry
+        <Plus size={18} />
+        Add Entry
       </button>
 
       <button
-        className="btnPrimaryGhost"
+        className="btnPrimary"
         onClick={generatePDF}
         disabled={isExporting}
         type="button"
@@ -966,18 +965,21 @@ export default function UploadPanel() {
             Generating…
           </span>
         ) : (
-          "Generate PDF"
+          <>
+            <Download size={18} />
+            Generate PDF
+          </>
         )}
       </button>
 
       {pdfPreviewUrl && (
         <div className="previewBox">
           <div className="previewTop">
-            <p className="previewTitle">✅ Preview Ready</p>
+            <p className="previewTitle">Preview Ready</p>
 
             <div className="previewActions">
               <button
-                className="btnPrimaryGhost"
+                className="btnPrimary"
                 type="button"
                 onClick={() => {
                   const link = document.createElement("a");
@@ -986,7 +988,8 @@ export default function UploadPanel() {
                   link.click();
                 }}
               >
-                ⬇️ Download PDF
+                <Download size={18} />
+                Download
               </button>
 
               <button
@@ -998,10 +1001,10 @@ export default function UploadPanel() {
                   setLastFileName(null);
                 }}
               >
-                ✕ Close
+                <X size={18} />
+                Close
               </button>
             </div>
-
           </div>
 
           <div className="previewFrameWrap">
@@ -1013,7 +1016,7 @@ export default function UploadPanel() {
           </div>
         </div>
       )}
-
+      </div>
     </div>
   );
 }
