@@ -53,13 +53,17 @@ function slugify(str) {
   return (str || "")
     .toLowerCase()
     .trim()
-    .replace(/[^\w\s-]/g, "") // remove special chars
-    .replace(/\s+/g, "-") // spaces -> dashes
-    .replace(/-+/g, "-"); // collapse dashes
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
 }
 
 // ✅ Compress image before adding to PDF (keeps aspect ratio)
-async function compressImageToDataUrl(fileOrBlob, targetMaxWidth = 1400, quality = 0.72) {
+async function compressImageToDataUrl(
+  fileOrBlob,
+  targetMaxWidth = 1400,
+  quality = 0.72
+) {
   const dataUrl = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -97,17 +101,16 @@ async function compressImageToDataUrl(fileOrBlob, targetMaxWidth = 1400, quality
   });
 }
 
-
 // ---------- Sortable Photo ----------
-function SortablePhoto({ photo, onRemove }) {
+function SortablePhoto({ photo, onRemove, disabled }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: photo.id });
+    useSortable({ id: photo.id, disabled });
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.6 : 1,
-    cursor: "grab",
+    cursor: disabled ? "not-allowed" : "grab",
   };
 
   return (
@@ -118,10 +121,16 @@ function SortablePhoto({ photo, onRemove }) {
         className="thumbRemove"
         onClick={() => onRemove(photo)}
         aria-label="Remove photo"
+        disabled={disabled}
       >
         ✕
       </button>
-      <div className="dragHandle" {...attributes} {...listeners}>
+      <div
+        className="dragHandle"
+        {...attributes}
+        {...listeners}
+        style={{ opacity: disabled ? 0.5 : 1 }}
+      >
         ⠿
       </div>
     </div>
@@ -131,6 +140,9 @@ function SortablePhoto({ photo, onRemove }) {
 export default function UploadPanel() {
   const [entries, setEntries] = useState([createEntry()]);
   const [globalError, setGlobalError] = useState(null);
+
+  // ✅ Export state (NEW)
+  const [isExporting, setIsExporting] = useState(false);
 
   const [projectName, setProjectName] = useState("");
   const [reportDate, setReportDate] = useState(() => {
@@ -220,6 +232,7 @@ export default function UploadPanel() {
 
   // ✅ Delete Entry
   const deleteEntry = (entryId) => {
+    if (isExporting) return;
     if (!confirm("Delete this entry?")) return;
 
     setEntries((prev) => {
@@ -313,6 +326,7 @@ export default function UploadPanel() {
 
   // ---------- Add photos ----------
   const addPhotosToEntry = async (entryId, files) => {
+    if (isExporting) return;
     if (!files || files.length === 0) return;
 
     updateEntry(entryId, { uploading: true, error: null });
@@ -352,6 +366,8 @@ export default function UploadPanel() {
   };
 
   const startRecording = async (entryId) => {
+    if (isExporting) return;
+
     setGlobalError(null);
     updateEntry(entryId, { error: null });
 
@@ -418,6 +434,8 @@ export default function UploadPanel() {
   };
 
   const stopRecording = () => {
+    if (isExporting) return;
+
     try {
       const recorder = mediaRecorderRef.current;
       if (!recorder) return;
@@ -430,6 +448,8 @@ export default function UploadPanel() {
 
   // ---------- Reset Entry ----------
   const resetEntry = (entryId) => {
+    if (isExporting) return;
+
     setEntries((prev) =>
       prev.map((e) => {
         if (e.id !== entryId) return e;
@@ -440,10 +460,14 @@ export default function UploadPanel() {
     );
   };
 
-  const addEntry = () => setEntries((prev) => [...prev, createEntry()]);
+  const addEntry = () => {
+    if (isExporting) return;
+    setEntries((prev) => [...prev, createEntry()]);
+  };
 
-  // ✅ Clear Report (FIXED, always defined)
+  // ✅ Clear Report
   const clearReport = () => {
+    if (isExporting) return;
     if (!confirm("Clear all entries?")) return;
 
     entries.forEach((e) => {
@@ -459,23 +483,29 @@ export default function UploadPanel() {
 
   // ---------- PDF ----------
   const generatePDF = async () => {
+    if (isExporting) return; // ✅ prevent double click
+
     setGlobalError(null);
 
-    // ✅ Prevent empty report
     const hasContent = entries.some(
       (e) =>
-        (e.text && e.text.trim() !== "") ||
-        (e.photos && e.photos.length > 0)
+        (e.text && e.text.trim() !== "") || (e.photos && e.photos.length > 0)
     );
 
     if (!hasContent) {
-      setGlobalError("Nothing to export. Add at least one entry before generating the PDF.");
+      setGlobalError(
+        "Nothing to export. Add at least one entry before generating the PDF."
+      );
       return;
     }
 
     try {
-      const doc = new jsPDF("p", "mm", "a4");
+      setIsExporting(true);
 
+      // ✅ let UI breathe (shows spinner before heavy work starts)
+      await new Promise((r) => setTimeout(r, 50));
+
+      const doc = new jsPDF("p", "mm", "a4");
       const pageW = doc.internal.pageSize.getWidth();
       const pageH = doc.internal.pageSize.getHeight();
 
@@ -512,33 +542,26 @@ export default function UploadPanel() {
         const offsetY = yPos + (boxH - drawH) / 2;
 
         const format = dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
-
         doc.addImage(dataUrl, format, offsetX, offsetY, drawW, drawH);
       };
 
-
       const drawHeader = (isFirstPage) => {
         const headerTop = isFirstPage ? 12 : 8;
-
-        // ✅ bigger logo
         const logoBox = isFirstPage ? 24 : 14;
 
         const titleSize = isFirstPage ? 15 : 11;
         const metaSize = isFirstPage ? 11 : 9;
 
-        // ✅ LOGO (always keep aspect ratio)
         if (logoDataUrl) {
           drawImageContain(logoDataUrl, marginX, headerTop, logoBox, logoBox);
         }
 
-        // ✅ centered title (premium)
         doc.setFont("helvetica", "bold");
         doc.setFontSize(titleSize);
 
         const titleY = headerTop + (isFirstPage ? 11 : 9);
         doc.text("Daily Report", pageW / 2, titleY, { align: "center" });
 
-        // ✅ right meta (2 lines)
         doc.setFont("helvetica", "normal");
         doc.setFontSize(metaSize);
         doc.setTextColor(80);
@@ -555,7 +578,6 @@ export default function UploadPanel() {
 
         doc.setTextColor(0);
 
-        // ✅ spacing after header
         y = isFirstPage ? headerTop + logoBox + 14 : headerTop + logoBox + 10;
       };
 
@@ -602,13 +624,11 @@ export default function UploadPanel() {
 
         ensureSpace(entryH + 10);
 
-        // Container
         doc.setDrawColor(220);
         doc.roundedRect(boxX, y, boxW, entryH, 4, 4);
 
         let innerY = y + padding;
 
-        // Description box
         doc.setDrawColor(200);
         doc.roundedRect(
           boxX + padding,
@@ -625,7 +645,6 @@ export default function UploadPanel() {
 
         innerY += textH + 10;
 
-        // Photos
         if (hasPhotos) {
           doc.setFont("helvetica", "bold");
           doc.setFontSize(11);
@@ -643,8 +662,11 @@ export default function UploadPanel() {
             doc.setDrawColor(220);
             doc.roundedRect(x, imgY, imgW, imgH, 3, 3);
 
-            const dataUrl = await compressImageToDataUrl(photo.blob || photo.file, 1400, 0.72);
-
+            const dataUrl = await compressImageToDataUrl(
+              photo.blob || photo.file,
+              1400,
+              0.72
+            );
 
             drawImageContain(dataUrl, x + 1, imgY + 1, imgW - 2, imgH - 2);
           }
@@ -658,33 +680,28 @@ export default function UploadPanel() {
 
       for (let p = 1; p <= totalPages; p++) {
         doc.setPage(p);
-
-        // redraw correct header
         drawHeader(p === 1);
 
-        // footer
         doc.setFont("helvetica", "normal");
         doc.setFontSize(9);
         doc.setTextColor(140);
 
-        doc.text(
-          `Page ${p} / ${totalPages}`,
-          pageW / 2,
-          pageH - 10,
-          { align: "center" }
-        );
+        doc.text(`Page ${p} / ${totalPages}`, pageW / 2, pageH - 10, {
+          align: "center",
+        });
 
         doc.setTextColor(0);
       }
 
-      // ✅ file name: DATE first (sortable) + project
       const safeProject = slugify(projectName || "site");
       const fileName = `${reportDate}__${safeProject}__daily-report.pdf`;
 
       doc.save(fileName);
     } catch (err) {
       console.error(err);
-      setGlobalError("PDF generation failed.");
+      setGlobalError("PDF generation failed. Please try again.");
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -696,6 +713,7 @@ export default function UploadPanel() {
             <label>Project</label>
             <input
               value={projectName}
+              disabled={isExporting}
               onChange={(e) => setProjectName(e.target.value)}
               placeholder="Project name..."
               className="metaInput"
@@ -707,6 +725,7 @@ export default function UploadPanel() {
             <input
               type="date"
               value={reportDate}
+              disabled={isExporting}
               onChange={(e) => setReportDate(e.target.value)}
               className="metaInput"
             />
@@ -716,10 +735,28 @@ export default function UploadPanel() {
         <h2 className="title">SYTCORE Daily Report</h2>
 
         <div className="topActions">
-          <button className="btnPrimaryGhost" onClick={generatePDF}>
-            Generate PDF
+          <button
+            className="btnPrimaryGhost"
+            onClick={generatePDF}
+            disabled={isExporting}
+            type="button"
+          >
+            {isExporting ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="spinner" />
+                Generating…
+              </span>
+            ) : (
+              "Generate PDF"
+            )}
           </button>
-          <button className="btnDanger" onClick={clearReport}>
+
+          <button
+            className="btnDanger"
+            onClick={clearReport}
+            disabled={isExporting}
+            type="button"
+          >
             Clear Report
           </button>
         </div>
@@ -729,6 +766,7 @@ export default function UploadPanel() {
           <button
             className="btnGhost"
             type="button"
+            disabled={isExporting}
             onClick={() => logoInputRef.current?.click()}
           >
             {logoDataUrl ? "✅ Logo Added (Change)" : "➕ Add Logo"}
@@ -760,22 +798,27 @@ export default function UploadPanel() {
                 {!entry.recording ? (
                   <button
                     className="btn"
+                    disabled={entry.transcribing || isExporting}
                     onClick={() => startRecording(entry.id)}
-                    disabled={entry.transcribing}
                     type="button"
                   >
                     🎙 Record
                   </button>
                 ) : (
-                  <button className="btn" onClick={stopRecording} type="button">
+                  <button
+                    className="btn"
+                    disabled={isExporting}
+                    onClick={stopRecording}
+                    type="button"
+                  >
                     ⏹ Stop
                   </button>
                 )}
 
                 <button
                   className="btnGhost"
+                  disabled={entry.transcribing || isExporting}
                   onClick={() => resetEntry(entry.id)}
-                  disabled={entry.transcribing}
                   type="button"
                 >
                   🗑 Reset
@@ -783,8 +826,8 @@ export default function UploadPanel() {
 
                 <button
                   className="btnDanger"
+                  disabled={entry.transcribing || isExporting}
                   onClick={() => deleteEntry(entry.id)}
-                  disabled={entry.transcribing}
                   type="button"
                 >
                   ❌ Delete
@@ -804,6 +847,7 @@ export default function UploadPanel() {
 
                 <textarea
                   className="textarea"
+                  disabled={isExporting}
                   value={entry.text || ""}
                   onChange={(e) =>
                     updateEntry(entry.id, { text: e.target.value })
@@ -822,7 +866,10 @@ export default function UploadPanel() {
 
               <div
                 className="dropzone"
-                onClick={() => fileInputRef.current[entry.id]?.click()}
+                onClick={() =>
+                  !isExporting && fileInputRef.current[entry.id]?.click()
+                }
+                style={{ opacity: isExporting ? 0.6 : 1 }}
               >
                 <input
                   ref={(el) => (fileInputRef.current[entry.id] = el)}
@@ -830,6 +877,7 @@ export default function UploadPanel() {
                   accept="image/*"
                   multiple
                   hidden
+                  disabled={isExporting}
                   onChange={async (e) => {
                     const files = Array.from(e.target.files || []);
                     await addPhotosToEntry(entry.id, files);
@@ -845,6 +893,7 @@ export default function UploadPanel() {
                 <DndContext
                   collisionDetection={closestCenter}
                   onDragEnd={(event) => {
+                    if (isExporting) return;
                     const { active, over } = event;
                     if (!over || active.id === over.id) return;
 
@@ -871,7 +920,9 @@ export default function UploadPanel() {
                         <SortablePhoto
                           key={photo.id}
                           photo={photo}
+                          disabled={isExporting}
                           onRemove={(p) => {
+                            if (isExporting) return;
                             URL.revokeObjectURL(p.url);
                             updateEntry(entry.id, (prev) => ({
                               photos: prev.photos.filter((x) => x.id !== p.id),
@@ -888,7 +939,11 @@ export default function UploadPanel() {
         ))}
       </div>
 
-      <button className="addEntryBtn" onClick={addEntry}>
+      <button
+        className="addEntryBtn"
+        onClick={addEntry}
+        disabled={isExporting}
+      >
         ➕ Add Entry
       </button>
     </div>
