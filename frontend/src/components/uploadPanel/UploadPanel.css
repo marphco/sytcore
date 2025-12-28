@@ -27,7 +27,7 @@ body {
   width: 100%;
   max-width: 1120px;
   margin: 0 auto;
-  padding: 26px 16px 90px;
+  padding: 26px 0px 90px;
 }
 
 /* per dare più "centro" visivo */
@@ -577,10 +577,564 @@ body {
 }
 
 .shell {
-  width: 100%;
+  min-width: 80vw;
   border-radius: 22px;
   padding: 22px;
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.09);
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+}
+
+
+/* ============================
+   REPORT SHEET (FAKE PDF)
+============================ */
+
+.sheetWrap {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  margin: 22px 0 28px;
+}
+
+.sheetPaper {
+  width: 100%;
+  max-width: 820px;
+  background: #fff;
+  color: #111;
+  border-radius: 18px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  position: relative;
+  padding: 34px;
+  padding-bottom: 90px;
+
+  /* ✅ NEW: auto height */
+  min-height: 1100px; /* simula A4 su desktop */
+}
+
+/* ✅ MOBILE: foglio lungo quanto serve */
+@media (max-width: 768px) {
+  .sheetPaper {
+    padding: 22px;
+    padding-bottom: 90px;
+    border-radius: 14px;
+
+    /* ✅ NEW */
+    min-height: auto;
+    height: auto;
+  }
+
+  .sheetFooter {
+    position: relative;
+    bottom: unset;
+    margin-top: 30px;
+  }
+}
+
+
+/* header */
+.sheetHeader {
+  display: grid;
+  grid-template-columns: 70px 1fr 220px;
+  align-items: center;
+  gap: 14px;
+}
+
+@media (max-width: 768px) {
+  .sheetHeader {
+    grid-template-columns: 60px 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .sheetMeta {
+    grid-column: 1 / -1;
+  }
+}
+
+.sheetLogo img {
+  width: 70px;
+  height: 70px;
+  object-fit: contain;
+}
+
+.sheetLogoPlaceholder {
+  width: 70px;
+  height: 70px;
+  border: 1px dashed rgba(0, 0, 0, 0.25);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.sheetTitle h3 {
+  margin: 0;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.sheetMeta {
+  text-align: right;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.sheetMetaLine {
+  margin: 0;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+/* body */
+.sheetBody {
+  margin-top: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sheetEmpty {
+  text-align: center;
+  font-size: 13px;
+  opacity: 0.6;
+}
+
+/* entry box */
+.sheetEntry {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.sheetTextBox {
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  min-height: 60px;
+  white-space: pre-wrap;
+}
+
+.sheetPhotosTitle {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sheetPhotosGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sheetPhotoBox {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 12px;
+  overflow: hidden;
+  aspect-ratio: 1 / 1;
+  background: #f3f3f3;
+}
+
+.sheetPhotoBox img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* footer */
+.sheetFooter {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  width: 100%;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px; /* ✅ distanza tra pulsante e paginazione */
+}
+
+.sheetFooterText {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+  font-weight: 600;
+}
+
+.muted {
+  opacity: 0.5;
+}
+
+.sheetMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: right;
+}
+
+.sheetMetaInput {
+  width: 100%;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.65);
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+  transition: 0.15s ease;
+}
+
+.sheetMetaInput:focus {
+  border-bottom-color: rgba(0, 0, 0, 0.4);
+}
+
+.sheetMetaInput::placeholder {
+  color: rgba(0, 0, 0, 0.35);
+}
+
+/* ============================
+   SHEET BODY / ENTRIES
+============================ */
+
+.sheetBody {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 22px;
+}
+
+.sheetEntry {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.sheetEntryTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.sheetEntryTitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 900;
+  color: rgba(0, 0, 0, 0.62);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.sheetEntryDelete {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 10px;
+  transition: 0.15s ease;
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.sheetEntryDelete:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: rgba(0, 0, 0, 0.72);
+}
+
+.sheetTextBox {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.sheetTextarea {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: vertical;
+  min-height: 110px;
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.82);
+}
+
+.sheetTextarea::placeholder {
+  color: rgba(0, 0, 0, 0.35);
+}
+
+.sheetPhotos {
+  margin-top: 12px;
+}
+
+.sheetDropzone {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(0, 0, 0, 0.22);
+  background: rgba(0, 0, 0, 0.02);
+  cursor: pointer;
+  transition: 0.15s ease;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.sheetDropzone:hover {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.35);
+}
+
+.sheetPhotoGrid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sheetPhotoThumb {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.sheetPhotoThumb::before {
+  content: "";
+  display: block;
+  padding-top: 72%;
+}
+
+.sheetPhotoThumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;   /* ✅ NON taglia più */
+  background: #f3f3f3;   /* ✅ riempie lo spazio vuoto */
+}
+
+
+.sheetPhotoRemove {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.15s ease;
+}
+
+.sheetPhotoRemove:hover {
+  background: rgba(0, 0, 0, 0.75);
+  transform: scale(1.05);
+}
+
+.sheetPhotoRemove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+
+  border: none;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+
+  cursor: pointer;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  transition: 0.16s ease;
+
+  z-index: 10;
+}
+
+.sheetPhotoRemove:hover {
+  background: rgba(0, 0, 0, 0.88);
+  transform: scale(1.06);
+}
+
+@media (max-width: 520px) {
+  .sheetPhotoRemove {
+    width: 38px;
+    height: 38px;
+  }
+}
+
+.sheetPhotoThumb {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* drag handle sheet */
+.sheetDragHandle {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: white;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-size: 14px;
+  cursor: grab;
+  z-index: 10;
+}
+
+@media (max-width: 768px) {
+  .addEntryBtn {
+    position: fixed;
+    bottom: 18px;
+    left: 16px;
+    right: 16px;
+    width: calc(100% - 32px);
+    z-index: 999;
+  }
+
+  .wrapper {
+    padding-bottom: 120px; /* spazio per bottone fisso */
+  }
+}
+
+
+.sheetAddEntryBtn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px dashed rgba(0, 0, 0, 0.25);
+  background: rgba(0, 0, 0, 0.02);
+  font-weight: 900;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.15s ease;
+  color: #111;
+}
+
+.sheetAddEntryBtn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.35);
+}
+
+.sheetAddEntryBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.topBarSimple {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.appTitle {
+  margin: 0;
+  font-weight: 900;
+  font-size: 26px;
+  letter-spacing: -0.6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Mobile: titolo leggermente più piccolo */
+@media (max-width: 520px) {
+  .appTitle {
+    font-size: 18px;
+  }
+
+  .topBarSimple {
+    gap: 10px;
+  }
+}
+
+.sheetHintMuted {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.55;
+  line-height: 1.2;
+}
+
+/* su mobile ancora più discreta */
+@media (max-width: 520px) {
+  .sheetHintMuted {
+    font-size: 11px;
+    opacity: 0.45;
+  }
+}
+
+.sheetTextTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sheetRemovePhotoBtn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  cursor: pointer;
+  z-index: 50;
+}
+
+.sheetRemovePhotoBtn svg {
+  stroke: white !important;
+  opacity: 1 !important;
+}
+
+.sheetDragHandle {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.dragHandle {
+  touch-action: none;
 }
